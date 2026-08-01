@@ -16,11 +16,15 @@ A **Godot 4.8** editor plugin that lists open GitHub Pull Requests in a left-bot
 
 ## Installation
 
-### As a Git submodule
+### As a Git submodule (recommended)
+
+Once the standalone repository is published:
 
 ```bash
 git submodule add https://github.com/EEEEEEEEthan/godot_pull_requests.git addons/godot_pull_requests
 ```
+
+Until that repository exists, you can use this addon’s transitional history from the Fire Emblem Gaiden game repo (`addon/godot_pull_requests` branch on `https://github.com/EEEEEEEEthan/FireEmblemGaiden.git`) as the submodule source.
 
 ### Or copy the folder
 
