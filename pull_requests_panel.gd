@@ -1,7 +1,7 @@
 @tool
 extends VBoxContainer
 
-## Pull Requests 面板：列出 open PR，支持浏览器打开与对齐 PR head 切换分支。
+## Pull Requests 面板：列出 open PR，支持浏览器打开、分支下拉切换，以及对齐 PR head。
 
 const _GH_LIST_SUBARGS: PackedStringArray = [
 	"pr", "list",
@@ -10,6 +10,12 @@ const _GH_LIST_SUBARGS: PackedStringArray = [
 	"--limit", "100",
 ]
 
+const _CHECKOUT_KIND_PR := "pr"
+const _CHECKOUT_KIND_BRANCH := "branch"
+## UI 源标识；用中文避免与名为 local 的 remote 混组。
+const _SOURCE_LOCAL := "本地"
+
+var _branch_menu_button: MenuButton
 var _status_label: Label
 var _refresh_button: Button
 var _list_container: VBoxContainer
@@ -20,8 +26,8 @@ var _confirm_dialog: ConfirmationDialog
 var _busy: bool = false
 ## 插件卸载或面板退出时置位，阻止 await 后继续执行破坏性 git。
 var _cancelled: bool = false
-## 待切换的 PR 元数据（确认框确认后使用）。
-var _pending_pr: Dictionary = {}
+## 待执行的统一切换请求（PR 或普通分支），确认框确认后使用。
+var _pending_checkout: Dictionary = {}
 ## 缓存从 origin 解析出的 GitHub owner/repo，供 gh -R 使用。
 var _cached_github_repo: String = ""
 
@@ -34,6 +40,7 @@ func _ready() -> void:
 	add_theme_constant_override("separation", 6)
 
 	_build_ui()
+	_update_current_branch_label()
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
 
@@ -45,7 +52,7 @@ func _exit_tree() -> void:
 ## 插件卸载或面板退出时调用：阻止后续破坏性 git，并断开确认框信号。
 func cancel_operations() -> void:
 	_cancelled = true
-	_pending_pr.clear()
+	_pending_checkout.clear()
 	if _confirm_dialog != null and is_instance_valid(_confirm_dialog):
 		if _confirm_dialog.confirmed.is_connected(_on_checkout_confirmed):
 			_confirm_dialog.confirmed.disconnect(_on_checkout_confirmed)
@@ -56,6 +63,16 @@ func cancel_operations() -> void:
 
 
 func _build_ui() -> void:
+	_branch_menu_button = MenuButton.new()
+	_branch_menu_button.flat = false
+	_branch_menu_button.text = "…"
+	_branch_menu_button.tooltip_text = "切换到本地或远程分支（会丢弃未提交改动）"
+	_branch_menu_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_branch_menu_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_branch_menu_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_branch_menu_button.get_popup().about_to_popup.connect(_on_branch_menu_about_to_popup)
+	add_child(_branch_menu_button)
+
 	var toolbar := HBoxContainer.new()
 	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	toolbar.add_theme_constant_override("separation", 8)
@@ -127,6 +144,8 @@ func _set_status(message: String, is_error: bool = false) -> void:
 
 func _set_busy(busy: bool) -> void:
 	_busy = busy
+	if is_instance_valid(_branch_menu_button):
+		_branch_menu_button.disabled = busy
 	if is_instance_valid(_refresh_button):
 		_refresh_button.disabled = busy
 	if not is_instance_valid(_list_container):
@@ -255,11 +274,209 @@ func _clear_list_rows() -> void:
 		child.queue_free()
 
 
+func _read_current_branch_label() -> String:
+	var current := _run_git(PackedStringArray(["branch", "--show-current"]))
+	if current["ok"]:
+		var name := str(current["output"]).strip_edges()
+		if not name.is_empty() and not _has_newline(name):
+			return name
+
+	var short_sha := _run_git(PackedStringArray(["rev-parse", "--short", "HEAD"]))
+	if short_sha["ok"]:
+		var sha := str(short_sha["output"]).strip_edges()
+		if not sha.is_empty() and not _has_newline(sha):
+			return "游离 HEAD（%s）" % sha
+	return "游离 HEAD"
+
+
+func _update_current_branch_label() -> void:
+	if not is_instance_valid(_branch_menu_button):
+		return
+	_branch_menu_button.text = _read_current_branch_label()
+
+
+## 枚举 refs/heads 与 refs/remotes，按 source 分组；跳过 */HEAD。
+## 返回 { "ok": bool, "error": String, "sources": Dictionary }。
+func _collect_branches_by_source() -> Dictionary:
+	var result := _run_git(PackedStringArray([
+		"for-each-ref",
+		"--format=%(refname)",
+		"refs/heads/",
+		"refs/remotes/",
+	]))
+	if not result["ok"]:
+		return {
+			"ok": false,
+			"error": str(result["error"]),
+			"sources": {},
+		}
+
+	var grouped: Dictionary = {}
+	for line in str(result["output"]).split("\n", false):
+		var refname := line.strip_edges()
+		if refname.is_empty() or _has_newline(refname):
+			continue
+		if refname.begins_with("refs/heads/"):
+			var local_branch := refname.substr("refs/heads/".length())
+			if local_branch.is_empty() or local_branch.ends_with("/HEAD"):
+				continue
+			_append_branch_for_source(grouped, _SOURCE_LOCAL, local_branch)
+		elif refname.begins_with("refs/remotes/"):
+			var remote_path := refname.substr("refs/remotes/".length())
+			if remote_path.is_empty() or remote_path.ends_with("/HEAD"):
+				continue
+			var slash := remote_path.find("/")
+			if slash <= 0 or slash >= remote_path.length() - 1:
+				continue
+			var remote_name := remote_path.substr(0, slash)
+			var remote_branch := remote_path.substr(slash + 1)
+			if remote_name.is_empty() or remote_branch.is_empty():
+				continue
+			if _has_newline(remote_name) or _has_newline(remote_branch):
+				continue
+			_append_branch_for_source(grouped, remote_name, remote_branch)
+	return {
+		"ok": true,
+		"error": "",
+		"sources": grouped,
+	}
+
+
+func _append_branch_for_source(grouped: Dictionary, source: String, branch: String) -> void:
+	if not grouped.has(source):
+		grouped[source] = []
+	var branches: Array = grouped[source]
+	if not branches.has(branch):
+		branches.append(branch)
+
+
+## 按分支名 `/` 分段建树。节点：{ "leaf": String, "children": Dictionary }
+func _build_branch_tree(branch_names: Array) -> Dictionary:
+	var root := {"leaf": "", "children": {}}
+	var sorted_names := branch_names.duplicate()
+	sorted_names.sort()
+	for branch_name in sorted_names:
+		var name := str(branch_name)
+		if name.is_empty():
+			continue
+		var node: Dictionary = root
+		var segments := name.split("/")
+		for segment_index in segments.size():
+			var segment := str(segments[segment_index])
+			if segment.is_empty():
+				continue
+			var children: Dictionary = node["children"]
+			if not children.has(segment):
+				children[segment] = {"leaf": "", "children": {}}
+			node = children[segment]
+		node["leaf"] = name
+	return root
+
+
+func _on_branch_menu_about_to_popup() -> void:
+	if _busy or _cancelled:
+		return
+	_rebuild_branch_menu()
+
+
+func _rebuild_branch_menu() -> void:
+	var popup := _branch_menu_button.get_popup()
+	# free_submenus=true，避免反复打开造成 PopupMenu 泄漏。
+	popup.clear(true)
+
+	var collection := _collect_branches_by_source()
+	if not collection["ok"]:
+		var error_message := str(collection["error"])
+		if error_message.is_empty():
+			error_message = "git for-each-ref 失败"
+		_set_status("枚举分支失败：" + error_message, true)
+		popup.add_item("枚举失败：" + error_message)
+		popup.set_item_disabled(0, true)
+		return
+
+	var grouped: Dictionary = collection["sources"]
+	var source_names: Array = grouped.keys()
+	source_names.sort_custom(func(a: Variant, b: Variant) -> bool:
+		var left := str(a)
+		var right := str(b)
+		if left == _SOURCE_LOCAL:
+			return true
+		if right == _SOURCE_LOCAL:
+			return false
+		return left < right
+	)
+
+	if source_names.is_empty():
+		popup.add_item("（无可用分支）")
+		popup.set_item_disabled(0, true)
+		return
+
+	for source_name in source_names:
+		var branches: Array = grouped[source_name]
+		if branches.is_empty():
+			continue
+		var source_menu := PopupMenu.new()
+		_populate_branch_tree_menu(source_menu, _build_branch_tree(branches), str(source_name))
+		popup.add_submenu_node_item(str(source_name), source_menu)
+
+
+func _populate_branch_tree_menu(menu: PopupMenu, tree_node: Dictionary, source: String) -> void:
+	menu.index_pressed.connect(_on_branch_menu_index_pressed.bind(menu))
+
+	var children: Dictionary = tree_node.get("children", {})
+	var segment_names: Array = children.keys()
+	segment_names.sort()
+	for segment_name in segment_names:
+		var child_node: Dictionary = children[segment_name]
+		var leaf_branch := str(child_node.get("leaf", ""))
+		var grand_children: Dictionary = child_node.get("children", {})
+		var has_leaf := not leaf_branch.is_empty()
+		var has_children := not grand_children.is_empty()
+
+		if has_leaf:
+			var leaf_label := str(segment_name)
+			# 与同名子菜单并存时，叶子标明「分支」以便区分。
+			if has_children:
+				leaf_label = "%s（分支）" % segment_name
+			menu.add_item(leaf_label)
+			var leaf_index := menu.item_count - 1
+			menu.set_item_metadata(leaf_index, {
+				"kind": _CHECKOUT_KIND_BRANCH,
+				"source": source,
+				"branch": leaf_branch,
+			})
+
+		if has_children:
+			var child_menu := PopupMenu.new()
+			_populate_branch_tree_menu(child_menu, child_node, source)
+			var submenu_label := str(segment_name)
+			if has_leaf:
+				submenu_label = "%s/" % segment_name
+			menu.add_submenu_node_item(submenu_label, child_menu)
+
+
+func _on_branch_menu_index_pressed(index: int, menu: PopupMenu) -> void:
+	if _busy or _cancelled:
+		return
+	if not is_instance_valid(menu):
+		return
+	if index < 0 or index >= menu.item_count:
+		return
+	var metadata: Variant = menu.get_item_metadata(index)
+	if typeof(metadata) != TYPE_DICTIONARY:
+		return
+	var checkout: Dictionary = metadata
+	if checkout.is_empty():
+		return
+	_request_checkout(checkout)
+
+
 func _refresh_prs() -> void:
 	if _busy or _cancelled:
 		return
 
 	_set_busy(true)
+	_update_current_branch_label()
 	_set_status("正在加载 Pull Request…")
 	_clear_list_rows()
 	_empty_label.visible = false
@@ -358,7 +575,7 @@ func _make_pr_row(pr: Dictionary) -> Control:
 	var checkout_button := Button.new()
 	checkout_button.text = "切换到此分支"
 	checkout_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	checkout_button.pressed.connect(_on_checkout_pressed.bind(pr.duplicate(true)))
+	checkout_button.pressed.connect(_on_checkout_pr_pressed.bind(pr.duplicate(true)))
 	buttons.add_child(checkout_button)
 
 	return row
@@ -377,7 +594,7 @@ func _on_open_pr_pressed(url: String, number: int) -> void:
 		_set_status("已在浏览器中打开 PR #%d" % number)
 
 
-func _on_checkout_pressed(pr: Dictionary) -> void:
+func _on_checkout_pr_pressed(pr: Dictionary) -> void:
 	if _busy or _cancelled:
 		return
 
@@ -394,26 +611,75 @@ func _on_checkout_pressed(pr: Dictionary) -> void:
 		_set_status("PR #%d 的分支名含换行，已拒绝切换" % number, true)
 		return
 
-	_pending_pr = pr
-	# 确认框打开期间锁定 UI，避免并发刷新 / 重复切换。
-	_set_busy(true)
-	_confirm_dialog.dialog_text = (
-		"即将切换到 PR #" + str(number) + "「" + title + "」的分支：\n"
-		+ branch
-		+ "\n\n将通过 pull/" + str(number) + "/head 对齐该 PR 的最新 head"
-		+ "（兼容 fork / 跨仓 PR）。\n\n"
-		+ "警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件），"
-		+ "并覆盖本地同名分支。\n\n"
-		+ "确定继续吗？"
-	)
-	_confirm_dialog.popup_centered()
+	_request_checkout({
+		"kind": _CHECKOUT_KIND_PR,
+		"number": number,
+		"title": title,
+		"branch": branch,
+	})
+
+
+func _request_checkout(checkout: Dictionary) -> void:
+	if _busy or _cancelled:
+		return
+
+	var kind := str(checkout.get("kind", ""))
+	if kind == _CHECKOUT_KIND_PR:
+		var number: int = int(checkout.get("number", 0))
+		var title := str(checkout.get("title", ""))
+		var branch := str(checkout.get("branch", ""))
+		_pending_checkout = checkout.duplicate(true)
+		_set_busy(true)
+		_confirm_dialog.dialog_text = (
+			"即将切换到 PR #" + str(number) + "「" + title + "」的分支：\n"
+			+ branch
+			+ "\n\n将通过 pull/" + str(number) + "/head 对齐该 PR 的最新 head"
+			+ "（兼容 fork / 跨仓 PR）。\n\n"
+			+ "警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件），"
+			+ "并覆盖本地同名分支。\n\n"
+			+ "确定继续吗？"
+		)
+		_confirm_dialog.popup_centered()
+		return
+
+	if kind == _CHECKOUT_KIND_BRANCH:
+		var source := str(checkout.get("source", ""))
+		var branch := str(checkout.get("branch", ""))
+		if source.is_empty() or branch.is_empty():
+			_set_status("分支信息不完整，无法切换", true)
+			return
+		if _has_newline(source) or _has_newline(branch):
+			_set_status("分支名或远程名含换行，已拒绝切换", true)
+			return
+
+		_pending_checkout = checkout.duplicate(true)
+		_set_busy(true)
+		var source_line := "%s / %s" % [source, branch]
+		var fetch_hint := ""
+		if source != _SOURCE_LOCAL:
+			fetch_hint = (
+				"\n将先 fetch %s %s，再清理工作区并以该远程分支创建/覆盖本地同名分支。\n"
+				% [source, branch]
+			)
+		_confirm_dialog.dialog_text = (
+			"即将切换到分支：\n"
+			+ source_line
+			+ "\n"
+			+ fetch_hint
+			+ "\n警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件）。\n\n"
+			+ "确定继续吗？"
+		)
+		_confirm_dialog.popup_centered()
+		return
+
+	_set_status("未知的切换类型，已忽略", true)
 
 
 func _on_checkout_canceled() -> void:
 	# 仅在仍停留在确认阶段时解锁；切换流程中途不应由此路径误解锁。
-	if _pending_pr.is_empty():
+	if _pending_checkout.is_empty():
 		return
-	_pending_pr.clear()
+	_pending_checkout.clear()
 	if _still_alive():
 		_set_busy(false)
 		_set_status("已取消切换分支")
@@ -422,14 +688,25 @@ func _on_checkout_canceled() -> void:
 func _on_checkout_confirmed() -> void:
 	if _cancelled:
 		return
-	if _pending_pr.is_empty():
+	if _pending_checkout.is_empty():
 		return
 
-	var pr := _pending_pr.duplicate(true)
-	_pending_pr.clear()
+	var checkout := _pending_checkout.duplicate(true)
+	_pending_checkout.clear()
 
-	var number: int = int(pr.get("number", 0))
-	var branch := str(pr.get("headRefName", ""))
+	var kind := str(checkout.get("kind", ""))
+	if kind == _CHECKOUT_KIND_PR:
+		await _execute_pr_checkout(checkout)
+	elif kind == _CHECKOUT_KIND_BRANCH:
+		await _execute_branch_checkout(checkout)
+	else:
+		_set_status("未知的切换类型，已取消切换", true)
+		_set_busy(false)
+
+
+func _execute_pr_checkout(checkout: Dictionary) -> void:
+	var number: int = int(checkout.get("number", 0))
+	var branch := str(checkout.get("branch", ""))
 	if number <= 0:
 		_set_status("无效的 PR 编号，已取消切换", true)
 		_set_busy(false)
@@ -439,59 +716,104 @@ func _on_checkout_confirmed() -> void:
 		_set_busy(false)
 		return
 
-	# _busy 在打开确认框时已置位；此处只刷新一次 UI，随后同步执行全部 git。
 	_set_status("正在对齐 PR #" + str(number) + " 的 head…")
 	if not await _yield_ui():
 		return
 
 	var pull_ref := "pull/%d/head" % number
-
-	# 1) 拉取 PR 官方 head ref（对 fork / 跨仓同样有效）
-	var fetch_result := _run_git(PackedStringArray(["fetch", "origin", pull_ref]))
-	if not _still_alive():
+	if not await _run_git_step(
+			PackedStringArray(["fetch", "origin", pull_ref]),
+			"git fetch " + pull_ref,
+	):
 		return
-	if not fetch_result["ok"]:
-		_set_status("git fetch " + pull_ref + " 失败：" + str(fetch_result["error"]), true)
-		_set_busy(false)
+	if not await _run_destructive_workspace_clean():
 		return
 
-	# 2) 丢弃当前工作区已跟踪文件的本地修改
-	var reset_result := _run_git(PackedStringArray(["reset", "--hard"]))
-	if not _still_alive():
-		return
-	if not reset_result["ok"]:
-		_set_status("git reset --hard 失败：" + str(reset_result["error"]), true)
-		_set_busy(false)
+	if not await _run_git_step(
+			PackedStringArray(["checkout", "-B", branch, "FETCH_HEAD"]),
+			"git checkout",
+	):
 		return
 
-	# 3) 清理未跟踪文件与目录
-	var clean_result := _run_git(PackedStringArray(["clean", "-fd"]))
-	if not _still_alive():
-		return
-	if not clean_result["ok"]:
-		_set_status("git clean -fd 失败：" + str(clean_result["error"]), true)
-		_set_busy(false)
-		return
-
-	# 4) 用 FETCH_HEAD（PR head）创建/覆盖本地分支
-	var checkout_result := _run_git(
-		PackedStringArray(["checkout", "-B", branch, "FETCH_HEAD"]),
+	_finish_checkout_success(
+		"已切换到 PR #" + str(number) + " 分支：" + branch
+		+ "（已对齐 pull/" + str(number) + "/head）"
 	)
-	if not _still_alive():
+
+
+func _execute_branch_checkout(checkout: Dictionary) -> void:
+	var source := str(checkout.get("source", ""))
+	var branch := str(checkout.get("branch", ""))
+	if source.is_empty() or branch.is_empty():
+		_set_status("分支信息不完整，已取消切换", true)
+		_set_busy(false)
 		return
-	if not checkout_result["ok"]:
-		_set_status("git checkout 失败：" + str(checkout_result["error"]), true)
+	if _has_newline(source) or _has_newline(branch):
+		_set_status("分支名或远程名含换行，已取消切换", true)
 		_set_busy(false)
 		return
 
-	# 通知编辑器扫描文件系统（切换分支后资源可能变化）
+	_set_status("正在切换到 %s / %s…" % [source, branch])
+	if not await _yield_ui():
+		return
+
+	if source == _SOURCE_LOCAL:
+		if not await _run_destructive_workspace_clean():
+			return
+		if not await _run_git_step(
+				PackedStringArray(["checkout", branch]),
+				"git checkout",
+		):
+			return
+	else:
+		# 与 PR 路径一致：对齐刚 fetch 的 FETCH_HEAD，避免非默认 refspec 下读到过期 remote-tracking。
+		if not await _run_git_step(
+				PackedStringArray(["fetch", source, branch]),
+				"git fetch %s %s" % [source, branch],
+		):
+			return
+		if not await _run_destructive_workspace_clean():
+			return
+		if not await _run_git_step(
+				PackedStringArray(["checkout", "-B", branch, "FETCH_HEAD"]),
+				"git checkout",
+		):
+			return
+
+	_finish_checkout_success("已切换到分支：%s / %s" % [source, branch])
+
+
+## reset --hard + clean -fd；任一步失败则解锁并返回 false。
+func _run_destructive_workspace_clean() -> bool:
+	if not await _run_git_step(
+			PackedStringArray(["reset", "--hard"]),
+			"git reset --hard",
+	):
+		return false
+	return await _run_git_step(
+			PackedStringArray(["clean", "-fd"]),
+			"git clean -fd",
+	)
+
+
+## 执行一步 git；失败时写状态并解锁。面板已卸载时返回 false。
+func _run_git_step(arguments: PackedStringArray, failure_prefix: String) -> bool:
+	var result := _run_git(arguments)
+	if not _still_alive():
+		return false
+	if not result["ok"]:
+		_set_status(failure_prefix + " 失败：" + str(result["error"]), true)
+		_set_busy(false)
+		return false
+	return true
+
+
+func _finish_checkout_success(message: String) -> void:
 	var fs := EditorInterface.get_resource_filesystem()
 	if fs != null:
 		fs.scan()
 
-	_set_status(
-		"已切换到 PR #" + str(number) + " 分支：" + branch + "（已对齐 pull/" + str(number) + "/head）"
-	)
+	_update_current_branch_label()
+	_set_status(message)
 	_set_busy(false)
-	# 切换后刷新列表
 	_refresh_prs()
