@@ -1,0 +1,82 @@
+[gd_scene load_steps=2 format=3 uid="uid://d9m3q7t1v5y8c"]
+
+[ext_resource type="Script" uid="uid://c7h2f9d4k8m3q" path="pr_row.gd" id="1_row"]
+
+[node name="PrRow" type="PanelContainer" unique_id=204857361]
+size_flags_horizontal = 3
+script = ExtResource("1_row")
+
+[node name="Margin" type="MarginContainer" parent="." unique_id=315968472]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/margin_left = 6
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 6
+theme_override_constants/margin_bottom = 6
+
+[node name="Column" type="VBoxContainer" parent="Margin" unique_id=426079583]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 4
+
+[node name="TitleLabel" type="Label" parent="Margin/Column" unique_id=537180694]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+autowrap_mode = 3
+
+[node name="BranchRow" type="HBoxContainer" parent="Margin/Column" unique_id=648291705]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 0
+
+[node name="BranchPrefix" type="Label" parent="Margin/Column/BranchRow" unique_id=759302816]
+unique_name_in_owner = true
+layout_mode = 2
+modulate = Color(0.75, 0.78, 0.85, 1)
+text = "分支："
+
+[node name="BranchLink" type="LinkButton" parent="Margin/Column/BranchRow" unique_id=860413927]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+tooltip_text = "在浏览器中打开此 PR"
+underline = 1
+
+[node name="BranchLabel" type="Label" parent="Margin/Column/BranchRow" unique_id=971524038]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+size_flags_horizontal = 3
+modulate = Color(0.75, 0.78, 0.85, 1)
+autowrap_mode = 3
+
+[node name="Buttons" type="HBoxContainer" parent="Margin/Column" unique_id=182635149]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="MergeButton" type="Button" parent="Margin/Column/Buttons" unique_id=293746250]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "合并"
+
+[node name="CloseButton" type="Button" parent="Margin/Column/Buttons" unique_id=304857361]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "关闭"
+
+[node name="CheckoutButton" type="Button" parent="Margin/Column/Buttons" unique_id=415968472]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "切换到此分支"
+
+[connection signal="pressed" from="Margin/Column/BranchRow/BranchLink" to="." method="_on_link_pressed"]
+[connection signal="pressed" from="Margin/Column/Buttons/MergeButton" to="." method="_on_merge_pressed"]
+[connection signal="pressed" from="Margin/Column/Buttons/CloseButton" to="." method="_on_close_pressed"]
+[connection signal="pressed" from="Margin/Column/Buttons/CheckoutButton" to="." method="_on_checkout_pressed"]

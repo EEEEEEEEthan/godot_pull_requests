@@ -15,7 +15,7 @@ func _enter_tree() -> void:
 	_dock.icon_name = &"ExternalLink"
 	_dock.global = true
 
-	_panel = preload("pull_requests_panel.gd").new()
+	_panel = preload("pull_requests_panel.tscn").instantiate() as Control
 	_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_panel.size_flags_vertical = Control.SIZE_EXPAND_FILL

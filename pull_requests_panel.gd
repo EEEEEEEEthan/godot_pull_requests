@@ -22,12 +22,15 @@ const _CHECKOUT_KIND_BRANCH := "branch"
 ## UI 源标识；用中文避免与名为 local 的 remote 混组。
 const _SOURCE_LOCAL := "本地"
 
-var _branch_menu_button: MenuButton
-var _status_label: Label
-var _refresh_button: Button
-var _list_container: VBoxContainer
-var _empty_label: Label
-var _confirm_dialog: ConfirmationDialog
+const _PrRow := preload("pr_row.gd")
+const _PR_ROW_SCENE := preload("pr_row.tscn")
+
+@onready var _branch_menu_button: MenuButton = %BranchMenuButton
+@onready var _status_label: Label = %StatusLabel
+@onready var _refresh_button: Button = %RefreshButton
+@onready var _list_container: VBoxContainer = %ListContainer
+@onready var _empty_label: Label = %EmptyLabel
+@onready var _confirm_dialog: ConfirmationDialog = %ConfirmDialog
 
 ## 交互锁定：刷新中 / 确认框打开 / 切换、合并、关闭进行中。
 var _busy: bool = false
@@ -43,12 +46,8 @@ var _cached_merge_flag: String = ""
 
 func _ready() -> void:
 	_cancelled = false
-	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	size_flags_vertical = Control.SIZE_EXPAND_FILL
-	add_theme_constant_override("separation", 6)
-
-	_build_ui()
+	# PopupMenu 由 MenuButton 内部创建，不便放进 tscn，在此连接。
+	_branch_menu_button.get_popup().about_to_popup.connect(_on_branch_menu_about_to_popup)
 	_update_current_branch_label()
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
@@ -69,63 +68,6 @@ func cancel_operations() -> void:
 			_confirm_dialog.canceled.disconnect(_on_action_canceled)
 		if _confirm_dialog.visible:
 			_confirm_dialog.hide()
-
-
-func _build_ui() -> void:
-	_branch_menu_button = MenuButton.new()
-	_branch_menu_button.text = "…"
-	_branch_menu_button.tooltip_text = "切换到本地或远程分支（会丢弃未提交改动）"
-	_branch_menu_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_branch_menu_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	_branch_menu_button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_branch_menu_button.get_popup().about_to_popup.connect(_on_branch_menu_about_to_popup)
-	add_child(_branch_menu_button)
-
-	var toolbar := HBoxContainer.new()
-	toolbar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	toolbar.add_theme_constant_override("separation", 8)
-	add_child(toolbar)
-
-	_refresh_button = Button.new()
-	_refresh_button.text = "刷新"
-	_refresh_button.tooltip_text = "重新拉取打开的 Pull Request 列表"
-	_refresh_button.pressed.connect(_refresh_prs)
-	toolbar.add_child(_refresh_button)
-
-	_status_label = Label.new()
-	_status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status_label.text = "准备就绪"
-	toolbar.add_child(_status_label)
-
-	var scroll := ScrollContainer.new()
-	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	add_child(scroll)
-
-	_list_container = VBoxContainer.new()
-	_list_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_list_container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_list_container.add_theme_constant_override("separation", 8)
-	scroll.add_child(_list_container)
-
-	_empty_label = Label.new()
-	_empty_label.text = "暂无打开的 Pull Request"
-	_empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_empty_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_empty_label.visible = false
-	_list_container.add_child(_empty_label)
-
-	_confirm_dialog = ConfirmationDialog.new()
-	_confirm_dialog.title = "确认切换分支"
-	_confirm_dialog.ok_button_text = "丢弃并切换"
-	_confirm_dialog.cancel_button_text = "取消"
-	_confirm_dialog.dialog_autowrap = true
-	_confirm_dialog.min_size = Vector2(420, 0)
-	_confirm_dialog.confirmed.connect(_on_action_confirmed)
-	_confirm_dialog.canceled.connect(_on_action_canceled)
-	add_child(_confirm_dialog)
 
 
 func _still_alive() -> bool:
@@ -161,19 +103,12 @@ func _set_busy(busy: bool) -> void:
 	for child in _list_container.get_children():
 		if child == _empty_label:
 			continue
-		_set_row_disabled(child, busy)
-
-
-func _set_row_disabled(row: Node, disabled: bool) -> void:
-	for child in row.get_children():
-		if child is BaseButton:
-			# keep_disabled：草稿/冲突等行内按钮在解锁后仍保持禁用。
-			if disabled or bool(child.get_meta("keep_disabled", false)):
-				(child as BaseButton).disabled = true
-			else:
-				(child as BaseButton).disabled = false
-		elif child is Container:
-			_set_row_disabled(child, disabled)
+		var row := child as _PrRow
+		if row != null:
+			row.set_busy(busy)
+		elif child.has_method("set_busy"):
+			# @tool 热重载后脚本身份可能对不上 as _PrRow，退回按方法调用。
+			child.call("set_busy", busy)
 
 
 func _project_dir() -> String:
@@ -587,101 +522,23 @@ func _refresh_prs() -> void:
 
 	_empty_label.visible = false
 	for pr in open_prs:
-		_list_container.add_child(_make_pr_row(pr))
+		_make_pr_row(pr)
 
 	_set_status("共 %d 个打开的 Pull Request" % open_prs.size())
 	_set_busy(false)
 
 
-func _make_pr_row(pr: Dictionary) -> Control:
-	var number: int = int(pr.get("number", 0))
-	var title := str(pr.get("title", ""))
-	var branch := str(pr.get("headRefName", ""))
-	var url := str(pr.get("url", ""))
-	var is_draft := bool(pr.get("isDraft", false))
-	var mergeable := str(pr.get("mergeable", ""))
-
-	var row := PanelContainer.new()
-	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-	var margin := MarginContainer.new()
-	margin.add_theme_constant_override("margin_left", 6)
-	margin.add_theme_constant_override("margin_right", 6)
-	margin.add_theme_constant_override("margin_top", 6)
-	margin.add_theme_constant_override("margin_bottom", 6)
-	row.add_child(margin)
-
-	var column := VBoxContainer.new()
-	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.add_theme_constant_override("separation", 4)
-	margin.add_child(column)
-
-	var title_label := Label.new()
-	title_label.text = "#" + str(number) + "  " + title
-	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	column.add_child(title_label)
-
-	if not branch.is_empty():
-		var branch_row := HBoxContainer.new()
-		branch_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		branch_row.add_theme_constant_override("separation", 0)
-		column.add_child(branch_row)
-
-		var branch_prefix := Label.new()
-		branch_prefix.text = "分支："
-		branch_prefix.modulate = Color(0.75, 0.78, 0.85)
-		branch_row.add_child(branch_prefix)
-
-		if url.is_empty():
-			var branch_label := Label.new()
-			branch_label.text = branch
-			branch_label.modulate = Color(0.75, 0.78, 0.85)
-			branch_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-			branch_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			branch_row.add_child(branch_label)
-		else:
-			var branch_link := LinkButton.new()
-			branch_link.text = branch
-			branch_link.uri = url
-			branch_link.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
-			branch_link.tooltip_text = "在浏览器中打开此 PR"
-			branch_link.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			branch_link.pressed.connect(_on_pr_link_pressed.bind(number))
-			branch_row.add_child(branch_link)
-
-	var buttons := HBoxContainer.new()
-	buttons.add_theme_constant_override("separation", 6)
-	column.add_child(buttons)
-
-	var merge_button := Button.new()
-	merge_button.text = "合并"
-	merge_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	if is_draft:
-		merge_button.disabled = true
-		merge_button.set_meta("keep_disabled", true)
-		merge_button.tooltip_text = "草稿 PR 不能合并"
-	elif mergeable == "CONFLICTING":
-		merge_button.disabled = true
-		merge_button.set_meta("keep_disabled", true)
-		merge_button.tooltip_text = "此 PR 有合并冲突，无法合并"
-	else:
-		merge_button.pressed.connect(_on_merge_pr_pressed.bind(pr.duplicate(true)))
-	buttons.add_child(merge_button)
-
-	var close_button := Button.new()
-	close_button.text = "关闭"
-	close_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	close_button.pressed.connect(_on_close_pr_pressed.bind(pr.duplicate(true)))
-	buttons.add_child(close_button)
-
-	var checkout_button := Button.new()
-	checkout_button.text = "切换到此分支"
-	checkout_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	checkout_button.pressed.connect(_on_checkout_pr_pressed.bind(pr.duplicate(true)))
-	buttons.add_child(checkout_button)
-
-	return row
+func _make_pr_row(pr: Dictionary) -> void:
+	var row := _PR_ROW_SCENE.instantiate() as _PrRow
+	if row == null:
+		push_error("无法实例化 PR 行场景 pr_row.tscn")
+		return
+	row.merge_requested.connect(_on_merge_pr_pressed)
+	row.close_requested.connect(_on_close_pr_pressed)
+	row.checkout_requested.connect(_on_checkout_pr_pressed)
+	row.link_opened.connect(_on_pr_link_pressed)
+	_list_container.add_child(row)
+	row.configure(pr)
 
 
 func _on_pr_link_pressed(number: int) -> void:
