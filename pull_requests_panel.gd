@@ -1,14 +1,21 @@
 @tool
 extends VBoxContainer
 
-## Pull Requests 面板：列出 open PR，支持浏览器打开、分支下拉切换，以及对齐 PR head。
+## Pull Requests 面板：列出 open PR，分支名可在浏览器打开，支持合并/关闭，以及分支下拉切换与对齐 PR head。
 
 const _GH_LIST_SUBARGS: PackedStringArray = [
 	"pr", "list",
 	"--state", "open",
-	"--json", "number,title,url,headRefName,state",
+	"--json", "number,title,url,headRefName,baseRefName,state,mergeable,isDraft",
 	"--limit", "100",
 ]
+
+const _ACTION_CHECKOUT := "checkout"
+const _ACTION_MERGE := "merge"
+const _ACTION_CLOSE := "close"
+const _MERGE_FLAG_MERGE := "--merge"
+const _MERGE_FLAG_SQUASH := "--squash"
+const _MERGE_FLAG_REBASE := "--rebase"
 
 const _CHECKOUT_KIND_PR := "pr"
 const _CHECKOUT_KIND_BRANCH := "branch"
@@ -22,14 +29,16 @@ var _list_container: VBoxContainer
 var _empty_label: Label
 var _confirm_dialog: ConfirmationDialog
 
-## 交互锁定：刷新中 / 确认框打开 / 切换分支进行中。
+## 交互锁定：刷新中 / 确认框打开 / 切换、合并、关闭进行中。
 var _busy: bool = false
 ## 插件卸载或面板退出时置位，阻止 await 后继续执行破坏性 git。
 var _cancelled: bool = false
-## 待执行的统一切换请求（PR 或普通分支），确认框确认后使用。
-var _pending_checkout: Dictionary = {}
+## 待执行的统一操作（切换 / 合并 / 关闭），确认框确认后使用。
+var _pending_action: Dictionary = {}
 ## 缓存从 origin 解析出的 GitHub owner/repo，供 gh -R 使用。
 var _cached_github_repo: String = ""
+## 缓存仓库允许的非交互合并策略（--merge / --squash / --rebase）。
+var _cached_merge_flag: String = ""
 
 
 func _ready() -> void:
@@ -52,19 +61,18 @@ func _exit_tree() -> void:
 ## 插件卸载或面板退出时调用：阻止后续破坏性 git，并断开确认框信号。
 func cancel_operations() -> void:
 	_cancelled = true
-	_pending_checkout.clear()
+	_pending_action.clear()
 	if _confirm_dialog != null and is_instance_valid(_confirm_dialog):
-		if _confirm_dialog.confirmed.is_connected(_on_checkout_confirmed):
-			_confirm_dialog.confirmed.disconnect(_on_checkout_confirmed)
-		if _confirm_dialog.canceled.is_connected(_on_checkout_canceled):
-			_confirm_dialog.canceled.disconnect(_on_checkout_canceled)
+		if _confirm_dialog.confirmed.is_connected(_on_action_confirmed):
+			_confirm_dialog.confirmed.disconnect(_on_action_confirmed)
+		if _confirm_dialog.canceled.is_connected(_on_action_canceled):
+			_confirm_dialog.canceled.disconnect(_on_action_canceled)
 		if _confirm_dialog.visible:
 			_confirm_dialog.hide()
 
 
 func _build_ui() -> void:
 	_branch_menu_button = MenuButton.new()
-	_branch_menu_button.flat = false
 	_branch_menu_button.text = "…"
 	_branch_menu_button.tooltip_text = "切换到本地或远程分支（会丢弃未提交改动）"
 	_branch_menu_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -115,8 +123,8 @@ func _build_ui() -> void:
 	_confirm_dialog.cancel_button_text = "取消"
 	_confirm_dialog.dialog_autowrap = true
 	_confirm_dialog.min_size = Vector2(420, 0)
-	_confirm_dialog.confirmed.connect(_on_checkout_confirmed)
-	_confirm_dialog.canceled.connect(_on_checkout_canceled)
+	_confirm_dialog.confirmed.connect(_on_action_confirmed)
+	_confirm_dialog.canceled.connect(_on_action_canceled)
 	add_child(_confirm_dialog)
 
 
@@ -158,8 +166,12 @@ func _set_busy(busy: bool) -> void:
 
 func _set_row_disabled(row: Node, disabled: bool) -> void:
 	for child in row.get_children():
-		if child is Button:
-			(child as Button).disabled = disabled
+		if child is BaseButton:
+			# keep_disabled：草稿/冲突等行内按钮在解锁后仍保持禁用。
+			if disabled or bool(child.get_meta("keep_disabled", false)):
+				(child as BaseButton).disabled = true
+			else:
+				(child as BaseButton).disabled = false
 		elif child is Container:
 			_set_row_disabled(child, disabled)
 
@@ -264,6 +276,56 @@ func _run_gh(arguments: PackedStringArray) -> Dictionary:
 	var args := PackedStringArray(["-R", repo])
 	args.append_array(arguments)
 	return _execute("gh", args)
+
+
+## 执行一步 gh；失败时写状态并解锁。面板已卸载时返回 false。
+func _run_gh_step(arguments: PackedStringArray, failure_prefix: String) -> bool:
+	var result := _run_gh(arguments)
+	if not _still_alive():
+		return false
+	if not result["ok"]:
+		_set_status(failure_prefix + " 失败：" + str(result["error"]), true)
+		_set_busy(false)
+		return false
+	return true
+
+
+## 查询并缓存仓库允许的合并策略；优先 merge > squash > rebase。失败则默认 --merge。
+func _resolve_merge_flag() -> String:
+	if not _cached_merge_flag.is_empty():
+		return _cached_merge_flag
+
+	var result := _run_gh(PackedStringArray([
+		"repo", "view",
+		"--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed",
+	]))
+	if not result["ok"]:
+		return _MERGE_FLAG_MERGE
+
+	var parsed: Variant = JSON.parse_string(str(result["output"]))
+	if typeof(parsed) != TYPE_DICTIONARY:
+		return _MERGE_FLAG_MERGE
+
+	var info: Dictionary = parsed
+	var flag := _MERGE_FLAG_MERGE
+	if bool(info.get("mergeCommitAllowed", false)):
+		flag = _MERGE_FLAG_MERGE
+	elif bool(info.get("squashMergeAllowed", false)):
+		flag = _MERGE_FLAG_SQUASH
+	elif bool(info.get("rebaseMergeAllowed", false)):
+		flag = _MERGE_FLAG_REBASE
+	_cached_merge_flag = flag
+	return flag
+
+
+func _merge_flag_label(flag: String) -> String:
+	match flag:
+		_MERGE_FLAG_SQUASH:
+			return "squash（压缩）"
+		_MERGE_FLAG_REBASE:
+			return "rebase（变基）"
+		_:
+			return "merge（合并提交）"
 
 
 func _clear_list_rows() -> void:
@@ -494,6 +556,9 @@ func _refresh_prs() -> void:
 		_set_busy(false)
 		return
 
+	if _cached_merge_flag.is_empty():
+		_resolve_merge_flag()
+
 	var parsed: Variant = JSON.parse_string(str(result["output"]))
 	if typeof(parsed) != TYPE_ARRAY:
 		_empty_label.text = "解析失败"
@@ -533,6 +598,8 @@ func _make_pr_row(pr: Dictionary) -> Control:
 	var title := str(pr.get("title", ""))
 	var branch := str(pr.get("headRefName", ""))
 	var url := str(pr.get("url", ""))
+	var is_draft := bool(pr.get("isDraft", false))
+	var mergeable := str(pr.get("mergeable", ""))
 
 	var row := PanelContainer.new()
 	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -556,21 +623,57 @@ func _make_pr_row(pr: Dictionary) -> Control:
 	column.add_child(title_label)
 
 	if not branch.is_empty():
-		var branch_label := Label.new()
-		branch_label.text = "分支：" + branch
-		branch_label.modulate = Color(0.75, 0.78, 0.85)
-		branch_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		column.add_child(branch_label)
+		var branch_row := HBoxContainer.new()
+		branch_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		branch_row.add_theme_constant_override("separation", 0)
+		column.add_child(branch_row)
+
+		var branch_prefix := Label.new()
+		branch_prefix.text = "分支："
+		branch_prefix.modulate = Color(0.75, 0.78, 0.85)
+		branch_row.add_child(branch_prefix)
+
+		if url.is_empty():
+			var branch_label := Label.new()
+			branch_label.text = branch
+			branch_label.modulate = Color(0.75, 0.78, 0.85)
+			branch_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			branch_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			branch_row.add_child(branch_label)
+		else:
+			var branch_link := LinkButton.new()
+			branch_link.text = branch
+			branch_link.uri = url
+			branch_link.underline = LinkButton.UNDERLINE_MODE_ON_HOVER
+			branch_link.tooltip_text = "在浏览器中打开此 PR"
+			branch_link.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			branch_link.pressed.connect(_on_pr_link_pressed.bind(number))
+			branch_row.add_child(branch_link)
 
 	var buttons := HBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 6)
 	column.add_child(buttons)
 
-	var open_button := Button.new()
-	open_button.text = "在浏览器中打开"
-	open_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	open_button.pressed.connect(_on_open_pr_pressed.bind(url, number))
-	buttons.add_child(open_button)
+	var merge_button := Button.new()
+	merge_button.text = "合并"
+	merge_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	if is_draft:
+		merge_button.disabled = true
+		merge_button.set_meta("keep_disabled", true)
+		merge_button.tooltip_text = "草稿 PR 不能合并"
+	elif mergeable == "CONFLICTING":
+		merge_button.disabled = true
+		merge_button.set_meta("keep_disabled", true)
+		merge_button.tooltip_text = "此 PR 有合并冲突，无法合并"
+	else:
+		merge_button.pressed.connect(_on_merge_pr_pressed.bind(pr.duplicate(true)))
+	buttons.add_child(merge_button)
+
+	var close_button := Button.new()
+	close_button.text = "关闭"
+	close_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	close_button.pressed.connect(_on_close_pr_pressed.bind(pr.duplicate(true)))
+	buttons.add_child(close_button)
 
 	var checkout_button := Button.new()
 	checkout_button.text = "切换到此分支"
@@ -581,17 +684,10 @@ func _make_pr_row(pr: Dictionary) -> Control:
 	return row
 
 
-func _on_open_pr_pressed(url: String, number: int) -> void:
+func _on_pr_link_pressed(number: int) -> void:
 	if _busy or _cancelled:
 		return
-	if url.is_empty():
-		_set_status("PR #%d 缺少 URL" % number, true)
-		return
-	var err := OS.shell_open(url)
-	if err != OK:
-		_set_status("无法打开浏览器（错误码 %d）" % err, true)
-	else:
-		_set_status("已在浏览器中打开 PR #%d" % number)
+	_set_status("已在浏览器中打开 PR #%d" % number)
 
 
 func _on_checkout_pr_pressed(pr: Dictionary) -> void:
@@ -619,88 +715,188 @@ func _on_checkout_pr_pressed(pr: Dictionary) -> void:
 	})
 
 
+func _on_merge_pr_pressed(pr: Dictionary) -> void:
+	if _busy or _cancelled:
+		return
+
+	var number: int = int(pr.get("number", 0))
+	var title := str(pr.get("title", ""))
+	if number <= 0:
+		_set_status("无效的 PR 编号，无法合并", true)
+		return
+	if bool(pr.get("isDraft", false)):
+		_set_status("草稿 PR 不能合并", true)
+		return
+	if str(pr.get("mergeable", "")) == "CONFLICTING":
+		_set_status("此 PR 有合并冲突，无法合并", true)
+		return
+
+	var merge_flag := _resolve_merge_flag()
+	if merge_flag != _MERGE_FLAG_MERGE and merge_flag != _MERGE_FLAG_SQUASH and merge_flag != _MERGE_FLAG_REBASE:
+		merge_flag = _MERGE_FLAG_MERGE
+
+	_popup_pending_action({
+		"type": _ACTION_MERGE,
+		"number": number,
+		"title": title,
+		"merge_flag": merge_flag,
+		"base": str(pr.get("baseRefName", "")),
+	})
+
+
+func _on_close_pr_pressed(pr: Dictionary) -> void:
+	if _busy or _cancelled:
+		return
+
+	var number: int = int(pr.get("number", 0))
+	var title := str(pr.get("title", ""))
+	if number <= 0:
+		_set_status("无效的 PR 编号，无法关闭", true)
+		return
+
+	_popup_pending_action({
+		"type": _ACTION_CLOSE,
+		"number": number,
+		"title": title,
+	})
+
+
 func _request_checkout(checkout: Dictionary) -> void:
 	if _busy or _cancelled:
 		return
 
-	var kind := str(checkout.get("kind", ""))
-	if kind == _CHECKOUT_KIND_PR:
-		var number: int = int(checkout.get("number", 0))
-		var title := str(checkout.get("title", ""))
-		var branch := str(checkout.get("branch", ""))
-		_pending_checkout = checkout.duplicate(true)
-		_set_busy(true)
-		_confirm_dialog.dialog_text = (
-			"即将切换到 PR #" + str(number) + "「" + title + "」的分支：\n"
-			+ branch
-			+ "\n\n将通过 pull/" + str(number) + "/head 对齐该 PR 的最新 head"
-			+ "（兼容 fork / 跨仓 PR）。\n\n"
-			+ "警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件），"
-			+ "并覆盖本地同名分支。\n\n"
-			+ "确定继续吗？"
-		)
-		_confirm_dialog.popup_centered()
+	var action := checkout.duplicate(true)
+	action["type"] = _ACTION_CHECKOUT
+	_popup_pending_action(action)
+
+
+## 按操作类型配置确认框并弹出；确认/取消走统一 handler。
+func _popup_pending_action(action: Dictionary) -> void:
+	if _busy or _cancelled:
 		return
 
-	if kind == _CHECKOUT_KIND_BRANCH:
-		var source := str(checkout.get("source", ""))
-		var branch := str(checkout.get("branch", ""))
-		if source.is_empty() or branch.is_empty():
-			_set_status("分支信息不完整，无法切换", true)
-			return
-		if _has_newline(source) or _has_newline(branch):
-			_set_status("分支名或远程名含换行，已拒绝切换", true)
-			return
-
-		_pending_checkout = checkout.duplicate(true)
-		_set_busy(true)
-		var source_line := "%s / %s" % [source, branch]
-		var fetch_hint := ""
-		if source != _SOURCE_LOCAL:
-			fetch_hint = (
-				"\n将先 fetch %s %s，再清理工作区并以该远程分支创建/覆盖本地同名分支。\n"
-				% [source, branch]
+	var action_type := str(action.get("type", ""))
+	if action_type == _ACTION_CHECKOUT:
+		var kind := str(action.get("kind", ""))
+		if kind == _CHECKOUT_KIND_PR:
+			var number: int = int(action.get("number", 0))
+			var title := str(action.get("title", ""))
+			var branch := str(action.get("branch", ""))
+			_confirm_dialog.title = "确认切换分支"
+			_confirm_dialog.ok_button_text = "丢弃并切换"
+			_confirm_dialog.dialog_text = (
+				"即将切换到 PR #" + str(number) + "「" + title + "」的分支：\n"
+				+ branch
+				+ "\n\n将通过 pull/" + str(number) + "/head 对齐该 PR 的最新 head"
+				+ "（兼容 fork / 跨仓 PR）。\n\n"
+				+ "警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件），"
+				+ "并覆盖本地同名分支。\n\n"
+				+ "确定继续吗？"
 			)
+		elif kind == _CHECKOUT_KIND_BRANCH:
+			var source := str(action.get("source", ""))
+			var branch := str(action.get("branch", ""))
+			if source.is_empty() or branch.is_empty():
+				_set_status("分支信息不完整，无法切换", true)
+				return
+			if _has_newline(source) or _has_newline(branch):
+				_set_status("分支名或远程名含换行，已拒绝切换", true)
+				return
+			_confirm_dialog.title = "确认切换分支"
+			_confirm_dialog.ok_button_text = "丢弃并切换"
+			var source_line := "%s / %s" % [source, branch]
+			var fetch_hint := ""
+			if source != _SOURCE_LOCAL:
+				fetch_hint = (
+					"\n将先 fetch %s %s，再清理工作区并以该远程分支创建/覆盖本地同名分支。\n"
+					% [source, branch]
+				)
+			_confirm_dialog.dialog_text = (
+				"即将切换到分支：\n"
+				+ source_line
+				+ "\n"
+				+ fetch_hint
+				+ "\n警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件）。\n\n"
+				+ "确定继续吗？"
+			)
+		else:
+			_set_status("未知的切换类型，已忽略", true)
+			return
+	elif action_type == _ACTION_MERGE:
+		var number: int = int(action.get("number", 0))
+		var title := str(action.get("title", ""))
+		var merge_flag := str(action.get("merge_flag", _MERGE_FLAG_MERGE))
+		var base := str(action.get("base", ""))
+		_confirm_dialog.title = "确认合并"
+		_confirm_dialog.ok_button_text = "合并"
+		var target_line := ""
+		if not base.is_empty():
+			target_line = "到分支 " + base
 		_confirm_dialog.dialog_text = (
-			"即将切换到分支：\n"
-			+ source_line
-			+ "\n"
-			+ fetch_hint
-			+ "\n警告：此操作会丢弃本地所有未提交的改动（含未跟踪文件）。\n\n"
+			"即将合并 PR #" + str(number) + "「" + title + "」" + target_line + "。\n"
+			+ "将使用 " + _merge_flag_label(merge_flag) + " 方式（" + merge_flag + "）。\n\n"
 			+ "确定继续吗？"
 		)
-		_confirm_dialog.popup_centered()
+	elif action_type == _ACTION_CLOSE:
+		var number: int = int(action.get("number", 0))
+		var title := str(action.get("title", ""))
+		_confirm_dialog.title = "确认关闭"
+		_confirm_dialog.ok_button_text = "关闭"
+		_confirm_dialog.dialog_text = (
+			"即将关闭 PR #" + str(number) + "「" + title + "」。\n\n"
+			+ "确定继续吗？"
+		)
+	else:
+		_set_status("未知的操作类型，已忽略", true)
 		return
 
-	_set_status("未知的切换类型，已忽略", true)
+	_pending_action = action.duplicate(true)
+	_set_busy(true)
+	_confirm_dialog.popup_centered()
 
 
-func _on_checkout_canceled() -> void:
-	# 仅在仍停留在确认阶段时解锁；切换流程中途不应由此路径误解锁。
-	if _pending_checkout.is_empty():
+func _on_action_canceled() -> void:
+	# 仅在仍停留在确认阶段时解锁；执行流程中途不应由此路径误解锁。
+	if _pending_action.is_empty():
 		return
-	_pending_checkout.clear()
-	if _still_alive():
-		_set_busy(false)
+	var action_type := str(_pending_action.get("type", ""))
+	_pending_action.clear()
+	if not _still_alive():
+		return
+	_set_busy(false)
+	if action_type == _ACTION_MERGE:
+		_set_status("已取消合并")
+	elif action_type == _ACTION_CLOSE:
+		_set_status("已取消关闭")
+	else:
 		_set_status("已取消切换分支")
 
 
-func _on_checkout_confirmed() -> void:
+func _on_action_confirmed() -> void:
 	if _cancelled:
 		return
-	if _pending_checkout.is_empty():
+	if _pending_action.is_empty():
 		return
 
-	var checkout := _pending_checkout.duplicate(true)
-	_pending_checkout.clear()
+	var action := _pending_action.duplicate(true)
+	_pending_action.clear()
 
-	var kind := str(checkout.get("kind", ""))
-	if kind == _CHECKOUT_KIND_PR:
-		await _execute_pr_checkout(checkout)
-	elif kind == _CHECKOUT_KIND_BRANCH:
-		await _execute_branch_checkout(checkout)
+	var action_type := str(action.get("type", ""))
+	if action_type == _ACTION_CHECKOUT:
+		var kind := str(action.get("kind", ""))
+		if kind == _CHECKOUT_KIND_PR:
+			await _execute_pr_checkout(action)
+		elif kind == _CHECKOUT_KIND_BRANCH:
+			await _execute_branch_checkout(action)
+		else:
+			_set_status("未知的切换类型，已取消切换", true)
+			_set_busy(false)
+	elif action_type == _ACTION_MERGE:
+		await _execute_pr_merge(action)
+	elif action_type == _ACTION_CLOSE:
+		await _execute_pr_close(action)
 	else:
-		_set_status("未知的切换类型，已取消切换", true)
+		_set_status("未知的操作类型，已取消", true)
 		_set_busy(false)
 
 
@@ -781,6 +977,53 @@ func _execute_branch_checkout(checkout: Dictionary) -> void:
 			return
 
 	_finish_checkout_success("已切换到分支：%s / %s" % [source, branch])
+
+
+func _execute_pr_merge(action: Dictionary) -> void:
+	var number: int = int(action.get("number", 0))
+	var merge_flag := str(action.get("merge_flag", _MERGE_FLAG_MERGE))
+	if number <= 0:
+		_set_status("无效的 PR 编号，已取消合并", true)
+		_set_busy(false)
+		return
+	if merge_flag != _MERGE_FLAG_MERGE and merge_flag != _MERGE_FLAG_SQUASH and merge_flag != _MERGE_FLAG_REBASE:
+		merge_flag = _MERGE_FLAG_MERGE
+
+	_set_status("正在合并 PR #" + str(number) + "…")
+	if not await _yield_ui():
+		return
+
+	if not await _run_gh_step(
+			PackedStringArray(["pr", "merge", str(number), merge_flag]),
+			"gh pr merge",
+	):
+		return
+
+	_set_status("已合并 PR #" + str(number))
+	_set_busy(false)
+	_refresh_prs()
+
+
+func _execute_pr_close(action: Dictionary) -> void:
+	var number: int = int(action.get("number", 0))
+	if number <= 0:
+		_set_status("无效的 PR 编号，已取消关闭", true)
+		_set_busy(false)
+		return
+
+	_set_status("正在关闭 PR #" + str(number) + "…")
+	if not await _yield_ui():
+		return
+
+	if not await _run_gh_step(
+			PackedStringArray(["pr", "close", str(number)]),
+			"gh pr close",
+	):
+		return
+
+	_set_status("已关闭 PR #" + str(number))
+	_set_busy(false)
+	_refresh_prs()
 
 
 ## reset --hard + clean -fd；任一步失败则解锁并返回 false。
