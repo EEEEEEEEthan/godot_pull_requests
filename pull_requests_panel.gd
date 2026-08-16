@@ -25,7 +25,7 @@ const _SOURCE_LOCAL := "本地"
 const _PrRow := preload("pr_row.gd")
 const _PR_ROW_SCENE := preload("pr_row.tscn")
 
-@onready var _branch_menu_button: MenuButton = %BranchMenuButton
+@onready var _branch_option: OptionButton = %BranchOptionButton
 @onready var _status_label: Label = %StatusLabel
 @onready var _refresh_button: Button = %RefreshButton
 @onready var _list_container: VBoxContainer = %ListContainer
@@ -42,13 +42,17 @@ var _pending_action: Dictionary = {}
 var _cached_github_repo: String = ""
 ## 缓存仓库允许的非交互合并策略（--merge / --squash / --rebase）。
 var _cached_merge_flag: String = ""
+## 重建 OptionButton 项时置位，避免 item_selected 误触发切换（select 本身不 emit，热重载/版本兜底）。
+var _suppress_branch_selected: bool = false
 
 
 func _ready() -> void:
 	_cancelled = false
-	# PopupMenu 由 MenuButton 内部创建，不便放进 tscn，在此连接。
-	_branch_menu_button.get_popup().about_to_popup.connect(_on_branch_menu_about_to_popup)
-	_update_current_branch_label()
+	# PopupMenu 由 OptionButton 内部创建，不便放进 tscn；打开时再 rebuild，保证 refs 最新（不 fetch --all）。
+	var branch_popup := _branch_option.get_popup()
+	if not branch_popup.about_to_popup.is_connected(_on_branch_option_about_to_popup):
+		branch_popup.about_to_popup.connect(_on_branch_option_about_to_popup)
+	_rebuild_branch_options()
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
 
@@ -94,10 +98,16 @@ func _set_status(message: String, is_error: bool = false) -> void:
 
 func _set_busy(busy: bool) -> void:
 	_busy = busy
-	if is_instance_valid(_branch_menu_button):
-		_branch_menu_button.disabled = busy
 	if is_instance_valid(_refresh_button):
 		_refresh_button.disabled = busy
+	if is_instance_valid(_branch_option):
+		if busy:
+			_branch_option.disabled = true
+		else:
+			# 取消确认 / checkout 失败后，选中项可能停在用户点过的分支，需回到真实当前分支。
+			_rebuild_branch_options()
+			if is_instance_valid(_branch_option):
+				_branch_option.disabled = false
 	if not is_instance_valid(_list_container):
 		return
 	for child in _list_container.get_children():
@@ -271,12 +281,20 @@ func _clear_list_rows() -> void:
 		child.queue_free()
 
 
-func _read_current_branch_label() -> String:
+## 当前已检出的本地分支名；游离 HEAD 或失败时返回空串。
+func _read_current_local_branch() -> String:
 	var current := _run_git(PackedStringArray(["branch", "--show-current"]))
 	if current["ok"]:
 		var name := str(current["output"]).strip_edges()
 		if not name.is_empty() and not _has_newline(name):
 			return name
+	return ""
+
+
+func _read_current_branch_label() -> String:
+	var name := _read_current_local_branch()
+	if not name.is_empty():
+		return name
 
 	var short_sha := _run_git(PackedStringArray(["rev-parse", "--short", "HEAD"]))
 	if short_sha["ok"]:
@@ -284,12 +302,6 @@ func _read_current_branch_label() -> String:
 		if not sha.is_empty() and not _has_newline(sha):
 			return "游离 HEAD（%s）" % sha
 	return "游离 HEAD"
-
-
-func _update_current_branch_label() -> void:
-	if not is_instance_valid(_branch_menu_button):
-		return
-	_branch_menu_button.text = _read_current_branch_label()
 
 
 ## 枚举 refs/heads 与 refs/remotes，按 source 分组；跳过 */HEAD。
@@ -347,51 +359,7 @@ func _append_branch_for_source(grouped: Dictionary, source: String, branch: Stri
 		branches.append(branch)
 
 
-## 按分支名 `/` 分段建树。节点：{ "leaf": String, "children": Dictionary }
-func _build_branch_tree(branch_names: Array) -> Dictionary:
-	var root := {"leaf": "", "children": {}}
-	var sorted_names := branch_names.duplicate()
-	sorted_names.sort()
-	for branch_name in sorted_names:
-		var name := str(branch_name)
-		if name.is_empty():
-			continue
-		var node: Dictionary = root
-		var segments := name.split("/")
-		for segment_index in segments.size():
-			var segment := str(segments[segment_index])
-			if segment.is_empty():
-				continue
-			var children: Dictionary = node["children"]
-			if not children.has(segment):
-				children[segment] = {"leaf": "", "children": {}}
-			node = children[segment]
-		node["leaf"] = name
-	return root
-
-
-func _on_branch_menu_about_to_popup() -> void:
-	if _busy or _cancelled:
-		return
-	_rebuild_branch_menu()
-
-
-func _rebuild_branch_menu() -> void:
-	var popup := _branch_menu_button.get_popup()
-	# free_submenus=true，避免反复打开造成 PopupMenu 泄漏。
-	popup.clear(true)
-
-	var collection := _collect_branches_by_source()
-	if not collection["ok"]:
-		var error_message := str(collection["error"])
-		if error_message.is_empty():
-			error_message = "git for-each-ref 失败"
-		_set_status("枚举分支失败：" + error_message, true)
-		popup.add_item("枚举失败：" + error_message)
-		popup.set_item_disabled(0, true)
-		return
-
-	var grouped: Dictionary = collection["sources"]
+func _sorted_source_names(grouped: Dictionary) -> Array:
 	var source_names: Array = grouped.keys()
 	source_names.sort_custom(func(a: Variant, b: Variant) -> bool:
 		var left := str(a)
@@ -402,68 +370,114 @@ func _rebuild_branch_menu() -> void:
 			return false
 		return left < right
 	)
-
-	if source_names.is_empty():
-		popup.add_item("（无可用分支）")
-		popup.set_item_disabled(0, true)
-		return
-
-	for source_name in source_names:
-		var branches: Array = grouped[source_name]
-		if branches.is_empty():
-			continue
-		var source_menu := PopupMenu.new()
-		_populate_branch_tree_menu(source_menu, _build_branch_tree(branches), str(source_name))
-		popup.add_submenu_node_item(str(source_name), source_menu)
+	return source_names
 
 
-func _populate_branch_tree_menu(menu: PopupMenu, tree_node: Dictionary, source: String) -> void:
-	menu.index_pressed.connect(_on_branch_menu_index_pressed.bind(menu))
-
-	var children: Dictionary = tree_node.get("children", {})
-	var segment_names: Array = children.keys()
-	segment_names.sort()
-	for segment_name in segment_names:
-		var child_node: Dictionary = children[segment_name]
-		var leaf_branch := str(child_node.get("leaf", ""))
-		var grand_children: Dictionary = child_node.get("children", {})
-		var has_leaf := not leaf_branch.is_empty()
-		var has_children := not grand_children.is_empty()
-
-		if has_leaf:
-			var leaf_label := str(segment_name)
-			# 与同名子菜单并存时，叶子标明「分支」以便区分。
-			if has_children:
-				leaf_label = "%s（分支）" % segment_name
-			menu.add_item(leaf_label)
-			var leaf_index := menu.item_count - 1
-			menu.set_item_metadata(leaf_index, {
-				"kind": _CHECKOUT_KIND_BRANCH,
-				"source": source,
-				"branch": leaf_branch,
-			})
-
-		if has_children:
-			var child_menu := PopupMenu.new()
-			_populate_branch_tree_menu(child_menu, child_node, source)
-			var submenu_label := str(segment_name)
-			if has_leaf:
-				submenu_label = "%s/" % segment_name
-			menu.add_submenu_node_item(submenu_label, child_menu)
-
-
-func _on_branch_menu_index_pressed(index: int, menu: PopupMenu) -> void:
+func _on_branch_option_about_to_popup() -> void:
 	if _busy or _cancelled:
 		return
-	if not is_instance_valid(menu):
+	_rebuild_branch_options()
+
+
+## 扁平列出全部本地/远程分支，并选中当前本地分支（对不上则在最前加禁用的当前标签）。
+func _rebuild_branch_options() -> void:
+	if not is_instance_valid(_branch_option):
 		return
-	if index < 0 or index >= menu.item_count:
+	_suppress_branch_selected = true
+	_fill_branch_options()
+	_suppress_branch_selected = false
+
+
+func _fill_branch_options() -> void:
+	_branch_option.clear()
+
+	var collection := _collect_branches_by_source()
+	if not collection["ok"]:
+		var error_message := str(collection["error"])
+		if error_message.is_empty():
+			error_message = "git for-each-ref 失败"
+		_set_status("枚举分支失败：" + error_message, true)
+		_add_disabled_branch_item("枚举失败：" + error_message)
+		_branch_option.select(0)
 		return
-	var metadata: Variant = menu.get_item_metadata(index)
+
+	var grouped: Dictionary = collection["sources"]
+	var source_names := _sorted_source_names(grouped)
+	if source_names.is_empty():
+		_add_disabled_branch_item("（无可用分支）")
+		_branch_option.select(0)
+		return
+
+	var current_local := _read_current_local_branch()
+	var has_local_match := false
+	if not current_local.is_empty() and grouped.has(_SOURCE_LOCAL):
+		var local_branches: Array = grouped[_SOURCE_LOCAL]
+		has_local_match = local_branches.has(current_local)
+
+	# 游离 HEAD 或当前名对不上本地项：最前加禁用标签，供 OptionButton 显示（禁止手写 text）。
+	if not has_local_match:
+		_add_disabled_branch_item(_read_current_branch_label())
+
+	var select_index := 0 if not has_local_match else -1
+	for source_name in source_names:
+		var branches: Array = grouped[source_name].duplicate()
+		if branches.is_empty():
+			continue
+		branches.sort()
+		var source := str(source_name)
+		for branch_name in branches:
+			var branch := str(branch_name)
+			if branch.is_empty():
+				continue
+			var label := branch if source == _SOURCE_LOCAL else "%s/%s" % [source, branch]
+			_branch_option.add_item(label)
+			var idx := _branch_option.item_count - 1
+			_branch_option.set_item_metadata(idx, {
+				"kind": _CHECKOUT_KIND_BRANCH,
+				"source": source,
+				"branch": branch,
+			})
+			_branch_option.set_item_auto_translate_mode(idx, Node.AUTO_TRANSLATE_MODE_DISABLED)
+			if has_local_match and source == _SOURCE_LOCAL and branch == current_local:
+				select_index = idx
+
+	if _branch_option.item_count <= 0:
+		_add_disabled_branch_item("（无可用分支）")
+		_branch_option.select(0)
+		return
+	if select_index >= 0:
+		_branch_option.select(select_index)
+
+
+func _add_disabled_branch_item(label: String) -> void:
+	_branch_option.add_item(label)
+	var idx := _branch_option.item_count - 1
+	_branch_option.set_item_disabled(idx, true)
+	_branch_option.set_item_auto_translate_mode(idx, Node.AUTO_TRANSLATE_MODE_DISABLED)
+
+
+func _on_branch_item_selected(index: int) -> void:
+	if _suppress_branch_selected or _busy or _cancelled:
+		return
+	if not is_instance_valid(_branch_option):
+		return
+	if index < 0 or index >= _branch_option.item_count:
+		_rebuild_branch_options()
+		return
+	if _branch_option.is_item_disabled(index) or _branch_option.is_item_separator(index):
+		_rebuild_branch_options()
+		return
+	var metadata: Variant = _branch_option.get_item_metadata(index)
 	if typeof(metadata) != TYPE_DICTIONARY:
+		_rebuild_branch_options()
 		return
 	var checkout: Dictionary = metadata
-	if checkout.is_empty():
+	# 已在该本地分支上则不弹确认。
+	if (
+			str(checkout.get("source", "")) == _SOURCE_LOCAL
+			and str(checkout.get("branch", "")) == _read_current_local_branch()
+			and not str(checkout.get("branch", "")).is_empty()
+	):
 		return
 	_request_checkout(checkout)
 
@@ -473,7 +487,7 @@ func _refresh_prs() -> void:
 		return
 
 	_set_busy(true)
-	_update_current_branch_label()
+	_rebuild_branch_options()
 	_set_status("正在加载 Pull Request…")
 	_clear_list_rows()
 	_empty_label.visible = false
@@ -913,7 +927,7 @@ func _finish_checkout_success(message: String) -> void:
 	if fs != null:
 		fs.scan()
 
-	_update_current_branch_label()
+	_rebuild_branch_options()
 	_set_status(message)
 	_set_busy(false)
 	_refresh_prs()
