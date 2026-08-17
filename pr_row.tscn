@@ -1,6 +1,6 @@
-[gd_scene load_steps=2 format=3 uid="uid://d9m3q7t1v5y8c"]
+[gd_scene format=3 uid="uid://e7755wscx4hk"]
 
-[ext_resource type="Script" uid="uid://c7h2f9d4k8m3q" path="pr_row.gd" id="1_row"]
+[ext_resource type="Script" uid="uid://c7h2gad4k8m3q" path="res://addons/godot_pull_requests/pr_row.gd" id="1_row"]
 
 [node name="PrRow" type="PanelContainer" unique_id=204857361]
 size_flags_horizontal = 3
@@ -34,8 +34,8 @@ theme_override_constants/separation = 0
 
 [node name="BranchPrefix" type="Label" parent="Margin/Column/BranchRow" unique_id=759302816]
 unique_name_in_owner = true
-layout_mode = 2
 modulate = Color(0.75, 0.78, 0.85, 1)
+layout_mode = 2
 text = "分支："
 
 [node name="BranchLink" type="LinkButton" parent="Margin/Column/BranchRow" unique_id=860413927]
@@ -43,14 +43,15 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 tooltip_text = "在浏览器中打开此 PR"
+text = "asdfasdf"
 underline = 1
 
 [node name="BranchLabel" type="Label" parent="Margin/Column/BranchRow" unique_id=971524038]
 unique_name_in_owner = true
 visible = false
+modulate = Color(0.75, 0.78, 0.85, 1)
 layout_mode = 2
 size_flags_horizontal = 3
-modulate = Color(0.75, 0.78, 0.85, 1)
 autowrap_mode = 3
 
 [node name="Buttons" type="HBoxContainer" parent="Margin/Column" unique_id=182635149]
