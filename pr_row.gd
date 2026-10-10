@@ -141,12 +141,10 @@ func _apply_summary() -> void:
 	var branch := str(pull_request.get("headRefName", ""))
 	var url := str(pull_request.get("url", ""))
 	var checked_out := not branch.is_empty() and branch == current_branch
-	if branch.is_empty():
-		%TitleLink.text = "#%d  %s" % [number, title]
-	elif checked_out:
-		%TitleLink.text = "▶ " + branch
-	else:
-		%TitleLink.text = branch
+	var label := "#%d  %s" % [number, title]
+	if checked_out:
+		label = "▶ " + label
+	%TitleLink.text = label
 	%TitleLink.uri = url
 	if checked_out:
 		var current_color := Color(0.45, 0.95, 0.5)
