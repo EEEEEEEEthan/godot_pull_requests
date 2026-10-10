@@ -3,13 +3,6 @@ extends VBoxContainer
 
 ## Pull Requests 面板：列出 open PR，分支名可在浏览器打开，支持合并/关闭，以及分支下拉切换与对齐 PR head。
 
-const _GH_LIST_SUBARGS: PackedStringArray = [
-	"pr", "list",
-	"--state", "open",
-	"--json", "number,title,url,headRefName,baseRefName,state,mergeable,isDraft",
-	"--limit", "100",
-]
-
 const _ACTION_CHECKOUT := "checkout"
 const _ACTION_MERGE := "merge"
 const _ACTION_CLOSE := "close"
@@ -32,8 +25,13 @@ const _PR_ROW_SCENE := preload("pr_row.tscn")
 @onready var _empty_label: Label = %EmptyLabel
 @onready var _confirm_dialog: ConfirmationDialog = %ConfirmDialog
 
-## 交互锁定：刷新中 / 确认框打开 / 切换、合并、关闭进行中。
+## 交互锁定：确认框打开 / 切换、合并、关闭进行中。列表刷新不占用这把锁。
 var _busy: bool = false
+var _refreshing := false
+var _refresh_token := 0
+var _refresh_mutex := Mutex.new()
+var _refresh_ready := false
+var _refresh_payload: Dictionary = {}
 ## 插件卸载或面板退出时置位，阻止 await 后继续执行破坏性 git。
 var _cancelled: bool = false
 ## 待执行的统一操作（切换 / 合并 / 关闭），确认框确认后使用。
@@ -53,8 +51,31 @@ func _ready() -> void:
 	if not branch_popup.about_to_popup.is_connected(_on_branch_option_about_to_popup):
 		branch_popup.about_to_popup.connect(_on_branch_option_about_to_popup)
 	_rebuild_branch_options()
+	%RefreshIcon.texture = preload("res://addons/godot_pull_requests/refresh_icon.svg")
+	%RefreshIcon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
+
+
+func _process(delta: float) -> void:
+	if _refreshing and is_instance_valid(%RefreshIcon):
+		%RefreshIcon.pivot_offset = %RefreshIcon.size * 0.5
+		%RefreshIcon.rotation -= delta * TAU
+	var ready := false
+	var payload: Dictionary = {}
+	_refresh_mutex.lock()
+	if _refresh_ready:
+		ready = true
+		_refresh_ready = false
+		payload = _refresh_payload
+	_refresh_mutex.unlock()
+	if not ready:
+		if not _refreshing:
+			set_process(false)
+		return
+	if int(payload.get("token", -1)) != _refresh_token or not _still_alive():
+		return
+	_finish_refresh(payload)
 
 
 func _exit_tree() -> void:
@@ -98,8 +119,6 @@ func _set_status(message: String, is_error: bool = false) -> void:
 
 func _set_busy(busy: bool) -> void:
 	_busy = busy
-	if is_instance_valid(_refresh_button):
-		_refresh_button.disabled = busy
 	if is_instance_valid(_branch_option):
 		if busy:
 			_branch_option.disabled = true
@@ -483,63 +502,85 @@ func _on_branch_item_selected(index: int) -> void:
 
 
 func _refresh_prs() -> void:
-	if _busy or _cancelled:
+	if _refreshing or _cancelled or _busy:
 		return
 
-	_set_busy(true)
-	_rebuild_branch_options()
+	_refreshing = true
+	_refresh_token += 1
+	var token := _refresh_token
+	%RefreshButton.disabled = true
+	%RefreshIcon.rotation = 0.0
+	set_process(true)
 	_set_status("正在加载 Pull Request…")
-	_clear_list_rows()
-	_empty_label.visible = false
-
-	if not await _yield_ui():
+	var repository := _resolve_github_repo()
+	if repository.is_empty():
+		_finish_refresh({
+			"token": token,
+			"ok": false,
+			"output": "",
+			"error": "无法从 origin 解析 GitHub 仓库（owner/repo），请确认远程为 GitHub",
+		})
 		return
+	WorkerThreadPool.add_task(func() -> void:
+		var output: Array = []
+		var exit_code := OS.execute("gh", PackedStringArray([
+			"-R", repository,
+			"pr", "list",
+			"--state", "open",
+			"--json", "number,title,url,headRefName,baseRefName,state",
+			"--limit", "100",
+		]), output, true)
+		if not is_instance_valid(self):
+			return
+		var joined := "\n".join(output).strip_edges()
+		_refresh_mutex.lock()
+		if token == _refresh_token:
+			_refresh_payload = {
+				"token": token,
+				"ok": exit_code == 0,
+				"output": joined,
+				"error": joined if not joined.is_empty() else "gh pr list 失败",
+			}
+			_refresh_ready = true
+		_refresh_mutex.unlock()
+	)
 
-	var result := _run_gh(_GH_LIST_SUBARGS)
-	if not _still_alive():
-		return
-	if not result["ok"]:
+
+func _finish_refresh(result: Dictionary) -> void:
+	_refreshing = false
+	%RefreshButton.disabled = false
+	%RefreshIcon.rotation = 0.0
+	if not bool(result.get("ok", false)):
 		_empty_label.text = "加载失败"
 		_empty_label.visible = true
-		_set_status("加载失败：" + str(result["error"]), true)
-		_set_busy(false)
+		_clear_list_rows()
+		_set_status("加载失败：" + str(result.get("error", "")), true)
 		return
-
-	if _cached_merge_flag.is_empty():
-		_resolve_merge_flag()
-
-	var parsed: Variant = JSON.parse_string(str(result["output"]))
+	var parsed: Variant = JSON.parse_string(str(result.get("output", "")))
 	if typeof(parsed) != TYPE_ARRAY:
 		_empty_label.text = "解析失败"
 		_empty_label.visible = true
+		_clear_list_rows()
 		_set_status("无法解析 gh 输出为 JSON 数组", true)
-		_set_busy(false)
 		return
-
 	var open_prs: Array = []
 	for item in parsed:
 		if typeof(item) != TYPE_DICTIONARY:
 			continue
 		var pr: Dictionary = item
-		var state := str(pr.get("state", "")).to_upper()
-		# 仅展示 open；gh 已按 state 过滤，这里再保险一次。
-		if state != "OPEN":
+		if str(pr.get("state", "")).to_upper() != "OPEN":
 			continue
 		open_prs.append(pr)
-
+	_clear_list_rows()
 	if open_prs.is_empty():
 		_empty_label.text = "暂无打开的 Pull Request"
 		_empty_label.visible = true
 		_set_status("共 0 个打开的 Pull Request")
-		_set_busy(false)
 		return
-
 	_empty_label.visible = false
 	for pr in open_prs:
 		_make_pr_row(pr)
-
 	_set_status("共 %d 个打开的 Pull Request" % open_prs.size())
-	_set_busy(false)
 
 
 func _make_pr_row(pr: Dictionary) -> void:
@@ -552,7 +593,7 @@ func _make_pr_row(pr: Dictionary) -> void:
 	row.checkout_requested.connect(_on_checkout_pr_pressed)
 	row.link_opened.connect(_on_pr_link_pressed)
 	_list_container.add_child(row)
-	row.configure(pr)
+	row.show_pull_request(pr, _cached_github_repo)
 
 
 func _on_pr_link_pressed(number: int) -> void:

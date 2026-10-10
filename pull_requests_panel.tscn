@@ -53,9 +53,27 @@ theme_override_constants/separation = 8
 
 [node name="RefreshButton" type="Button" parent="Toolbar" unique_id=482736519]
 unique_name_in_owner = true
+custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
 tooltip_text = "重新拉取打开的 Pull Request 列表"
-text = "刷新"
+
+[node name="RefreshIcon" type="TextureRect" parent="Toolbar/RefreshButton" unique_id=482736520]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(16, 16)
+layout_mode = 1
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -8.0
+offset_top = -8.0
+offset_right = 8.0
+offset_bottom = 8.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stretch_mode = 5
 
 [node name="StatusLabel" type="Label" parent="Toolbar" unique_id=573928461]
 unique_name_in_owner = true
