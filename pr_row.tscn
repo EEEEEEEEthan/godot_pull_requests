@@ -1,11 +1,15 @@
 [gd_scene format=3 uid="uid://e7755wscx4hk"]
 
-[ext_resource type="Script" uid="uid://bm3qg0yf2duqw" path="res://addons/godot_pull_requests/pr_row.gd" id="1_row"]
-[ext_resource type="Texture2D" uid="uid://bve4bpxtbythw" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
+[ext_resource type="Script" uid="uid://c7h2f9d4k8m3q" path="res://addons/godot_pull_requests/pr_row.gd" id="1_row"]
+[ext_resource type="Texture2D" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_checkout"]
 atlas = ExtResource("2_icons")
 region = Rect2(0, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_merge"]
+atlas = ExtResource("2_icons")
+region = Rect2(16, 0, 16, 16)
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_spinner"]
 atlas = ExtResource("2_icons")
@@ -18,10 +22,6 @@ region = Rect2(80, 0, 16, 16)
 [sub_resource type="AtlasTexture" id="AtlasTexture_ci"]
 atlas = ExtResource("2_icons")
 region = Rect2(96, 0, 16, 16)
-
-[sub_resource type="AtlasTexture" id="AtlasTexture_merge"]
-atlas = ExtResource("2_icons")
-region = Rect2(16, 0, 16, 16)
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_close"]
 atlas = ExtResource("2_icons")
@@ -96,6 +96,6 @@ size_flags_horizontal = 8
 icon = SubResource("AtlasTexture_close")
 
 [connection signal="pressed" from="HBoxContainer/CheckoutButton" to="." method="request_checkout"]
-[connection signal="pressed" from="HBoxContainer/TitleLink" to="." method="open_link"]
 [connection signal="pressed" from="HBoxContainer/MergeButton" to="." method="request_merge"]
+[connection signal="pressed" from="HBoxContainer/TitleLink" to="." method="open_link"]
 [connection signal="pressed" from="HBoxContainer/CloseButton" to="." method="request_close"]

@@ -1,7 +1,7 @@
 [gd_scene format=3 uid="uid://bk4w8n2p6x10q"]
 
 [ext_resource type="Script" uid="uid://caqmprl4o0fu7" path="res://addons/godot_pull_requests/pull_requests_panel.gd" id="1_panel"]
-[ext_resource type="Texture2D" uid="uid://bve4bpxtbythw" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
+[ext_resource type="Texture2D" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_refresh"]
 atlas = ExtResource("2_icons")
@@ -256,3 +256,5 @@ cancel_button_text = "取消"
 [connection signal="item_selected" from="BranchOptionButton" to="." method="_on_branch_item_selected"]
 [connection signal="pressed" from="Toolbar/RefreshButton" to="." method="_refresh_prs"]
 [connection signal="pressed" from="Toolbar/MasterButton" to="." method="checkout_master"]
+[connection signal="canceled" from="ConfirmDialog" to="." method="_on_action_canceled"]
+[connection signal="confirmed" from="ConfirmDialog" to="." method="_on_action_confirmed"]

@@ -50,6 +50,10 @@ func _ready() -> void:
 	var branch_popup := _branch_option.get_popup()
 	if not branch_popup.about_to_popup.is_connected(_on_branch_option_about_to_popup):
 		branch_popup.about_to_popup.connect(_on_branch_option_about_to_popup)
+	if not %ConfirmDialog.confirmed.is_connected(_on_action_confirmed):
+		%ConfirmDialog.confirmed.connect(_on_action_confirmed)
+	if not %ConfirmDialog.canceled.is_connected(_on_action_canceled):
+		%ConfirmDialog.canceled.connect(_on_action_canceled)
 	_rebuild_branch_options()
 	%MasterButton.disabled = _read_current_local_branch() == "master"
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
