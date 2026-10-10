@@ -82,6 +82,13 @@ text = "pr_name"
 underline = 1
 text_overrun_behavior = 3
 
+[node name="ReadyToggle" type="CheckButton" parent="HBoxContainer" unique_id=281746250]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 28)
+layout_mode = 2
+tooltip_text = "草稿"
+text = "Ready"
+
 [node name="MergeButton" type="Button" parent="HBoxContainer" unique_id=293746250]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
@@ -96,6 +103,7 @@ size_flags_horizontal = 8
 icon = SubResource("AtlasTexture_close")
 
 [connection signal="pressed" from="HBoxContainer/CheckoutButton" to="." method="request_checkout"]
+[connection signal="toggled" from="HBoxContainer/ReadyToggle" to="." method="_on_ready_toggled"]
 [connection signal="pressed" from="HBoxContainer/MergeButton" to="." method="request_merge"]
 [connection signal="pressed" from="HBoxContainer/TitleLink" to="." method="open_link"]
 [connection signal="pressed" from="HBoxContainer/CloseButton" to="." method="request_close"]

@@ -32,6 +32,8 @@ var _detail_payload: Dictionary = {}
 var _action_mutex := Mutex.new()
 var _action_ready := false
 var _action_payload: Dictionary = {}
+## 切换 Ready 失败时要还原的 isDraft；null 表示这次操作不是 Ready。
+var _ready_revert_draft: Variant = null
 
 
 func _ready() -> void:
@@ -62,6 +64,8 @@ func _process(delta: float) -> void:
 		var parsed: Variant = JSON.parse_string(str(payload.get("output", "")))
 		if typeof(parsed) == TYPE_DICTIONARY:
 			for key in (parsed as Dictionary).keys():
+				if _action_pending and str(key) == "isDraft":
+					continue
 				pull_request[key] = (parsed as Dictionary)[key]
 		else:
 			pull_request["detail_error"] = "无法解析 PR 详情"
@@ -188,6 +192,9 @@ func _has_ci_failure() -> bool:
 
 
 func _apply_buttons() -> void:
+	var draft_known := pull_request.has("isDraft")
+	%ReadyToggle.set_pressed_no_signal(draft_known and not bool(pull_request.get("isDraft", false)))
+	%ReadyToggle.disabled = _busy or _details_pending or _action_pending or not draft_known
 	%MergeButton.disabled = _busy or _merge_blocked or _details_pending or _action_pending
 	%CloseButton.disabled = _busy or _action_pending
 	var branch := str(pull_request.get("headRefName", ""))
@@ -197,6 +204,12 @@ func _apply_buttons() -> void:
 
 func _apply_tooltips() -> void:
 	%TitleLink.tooltip_text = _detail_text()
+	if not pull_request.has("isDraft"):
+		%ReadyToggle.tooltip_text = "正在确认是不是草稿"
+	elif bool(pull_request.get("isDraft", false)):
+		%ReadyToggle.tooltip_text = "草稿。打开后标为可审查"
+	else:
+		%ReadyToggle.tooltip_text = "可审查。关掉后回到草稿"
 	%MergeButton.tooltip_text = "合并"
 	%CloseButton.tooltip_text = "关闭"
 	%CheckoutButton.tooltip_text = "切换到此分支"
@@ -267,6 +280,26 @@ func _review_text(review: String) -> String:
 			return "等待审查"
 		_:
 			return review
+
+
+func _on_ready_toggled(pressed: bool) -> void:
+	if pull_request.is_empty() or _action_pending or _details_pending or not pull_request.has("isDraft"):
+		_apply_buttons()
+		return
+	var number := int(pull_request.get("number", 0))
+	if number <= 0 or github_repository.is_empty():
+		_apply_buttons()
+		return
+	_ready_revert_draft = bool(pull_request.get("isDraft", false))
+	pull_request["isDraft"] = not pressed
+	var arguments := PackedStringArray(["pr", "ready", str(number)])
+	var success := "PR #%d 已可审查" % number
+	var failure := "标为可审查失败"
+	if not pressed:
+		arguments.append("--undo")
+		success = "PR #%d 已回到草稿" % number
+		failure = "改回草稿失败"
+	_begin_github_action(arguments, success, failure)
 
 
 func _begin_detail_fetch() -> void:
@@ -343,5 +376,8 @@ func _take_action_result() -> void:
 	if not ready:
 		return
 	_action_pending = false
+	if not bool(payload.get("ok", false)) and _ready_revert_draft != null:
+		pull_request["isDraft"] = bool(_ready_revert_draft)
+	_ready_revert_draft = null
 	_apply_summary()
 	github_action_finished.emit(bool(payload.get("ok", false)), str(payload.get("message", "")))
