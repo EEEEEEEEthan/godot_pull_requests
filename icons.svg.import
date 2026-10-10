@@ -2,21 +2,22 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://bovvoryp18j3a"
-path="res://.godot/imported/conflict_icon.svg-35e2881f166a43ac3d2666ca16949f8f.ctex"
+uid="uid://bve4bpxtbythw"
+path="res://.godot/imported/icons.svg-a20541d2268fd64dff24e01a218c1b2a.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://addons/godot_pull_requests/conflict_icon.svg"
-dest_files=["res://.godot/imported/conflict_icon.svg-35e2881f166a43ac3d2666ca16949f8f.ctex"]
+source_file="res://addons/godot_pull_requests/icons.svg"
+dest_files=["res://.godot/imported/icons.svg-a20541d2268fd64dff24e01a218c1b2a.ctex"]
 
 [params]
 
 compress/mode=0
 compress/high_quality=false
+compress/high_quality_mode=0
 compress/lossy_quality=0.7
 compress/uastc_level=0
 compress/rdo_quality_loss=0.0
@@ -25,6 +26,8 @@ compress/normal_map=0
 compress/channel_pack=0
 mipmaps/generate=false
 mipmaps/limit=-1
+mipmaps/preserve_alpha_test_coverage=false
+mipmaps/alpha_test_threshold=0.5
 roughness/mode=0
 roughness/src_normal=""
 process/channel_remap/red=0

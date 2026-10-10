@@ -51,8 +51,7 @@ func _ready() -> void:
 	if not branch_popup.about_to_popup.is_connected(_on_branch_option_about_to_popup):
 		branch_popup.about_to_popup.connect(_on_branch_option_about_to_popup)
 	_rebuild_branch_options()
-	%RefreshIcon.texture = preload("res://addons/godot_pull_requests/refresh_icon.svg")
-	%RefreshIcon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	%MasterButton.disabled = _read_current_local_branch() == "master"
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
 
@@ -127,6 +126,7 @@ func _set_busy(busy: bool) -> void:
 			_rebuild_branch_options()
 			if is_instance_valid(_branch_option):
 				_branch_option.disabled = false
+	%MasterButton.disabled = busy or _read_current_local_branch() == "master"
 	if not is_instance_valid(_list_container):
 		return
 	for child in _list_container.get_children():
@@ -575,12 +575,12 @@ func _finish_refresh(result: Dictionary) -> void:
 	if open_prs.is_empty():
 		_empty_label.text = "暂无打开的 Pull Request"
 		_empty_label.visible = true
-		_set_status("共 0 个打开的 Pull Request")
+		_set_status("")
 		return
 	_empty_label.visible = false
 	for pr in open_prs:
 		_make_pr_row(pr)
-	_set_status("共 %d 个打开的 Pull Request" % open_prs.size())
+	_set_status("")
 
 
 func _make_pr_row(pr: Dictionary) -> void:
@@ -670,6 +670,18 @@ func _on_close_pr_pressed(pr: Dictionary) -> void:
 		"type": _ACTION_CLOSE,
 		"number": number,
 		"title": title,
+	})
+
+
+func checkout_master() -> void:
+	if _busy or _cancelled or _refreshing:
+		return
+	if _read_current_local_branch() == "master":
+		return
+	_request_checkout({
+		"kind": _CHECKOUT_KIND_BRANCH,
+		"source": _SOURCE_LOCAL,
+		"branch": "master",
 	})
 
 

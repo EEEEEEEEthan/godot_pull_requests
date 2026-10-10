@@ -1,7 +1,15 @@
 [gd_scene format=3 uid="uid://bk4w8n2p6x10q"]
 
-[ext_resource type="Script" uid="uid://dcu0e20allte3" path="res://addons/godot_pull_requests/pull_requests_panel.gd" id="1_panel"]
-[ext_resource type="Texture2D" uid="uid://dd8ok3xo8xfsj" path="res://addons/godot_pull_requests/refresh_icon.svg" id="2_dqv3v"]
+[ext_resource type="Script" uid="uid://caqmprl4o0fu7" path="res://addons/godot_pull_requests/pull_requests_panel.gd" id="1_panel"]
+[ext_resource type="Texture2D" uid="uid://bve4bpxtbythw" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_refresh"]
+atlas = ExtResource("2_icons")
+region = Rect2(32, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_master"]
+atlas = ExtResource("2_icons")
+region = Rect2(64, 0, 16, 16)
 
 [node name="PullRequestsPanel" type="VBoxContainer" unique_id=142857369]
 anchors_preset = 15
@@ -197,14 +205,21 @@ grow_horizontal = 2
 grow_vertical = 2
 pivot_offset = Vector2(8, 8)
 mouse_filter = 2
-texture = ExtResource("2_dqv3v")
+texture = SubResource("AtlasTexture_refresh")
 stretch_mode = 5
+
+[node name="MasterButton" type="Button" parent="Toolbar" unique_id=482736521]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+tooltip_text = "切换到 master"
+disabled = true
+icon = SubResource("AtlasTexture_master")
 
 [node name="StatusLabel" type="Label" parent="Toolbar" unique_id=573928461]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-text = "共 6 个打开的 Pull Request"
 autowrap_mode = 3
 
 [node name="Scroll" type="ScrollContainer" parent="." unique_id=684019372]
@@ -219,7 +234,7 @@ unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
-theme_override_constants/separation = 0
+theme_override_constants/separation = 2
 
 [node name="EmptyLabel" type="Label" parent="Scroll/ListContainer" unique_id=806231594]
 unique_name_in_owner = true
@@ -240,5 +255,4 @@ cancel_button_text = "取消"
 
 [connection signal="item_selected" from="BranchOptionButton" to="." method="_on_branch_item_selected"]
 [connection signal="pressed" from="Toolbar/RefreshButton" to="." method="_refresh_prs"]
-[connection signal="canceled" from="ConfirmDialog" to="." method="_on_action_canceled"]
-[connection signal="confirmed" from="ConfirmDialog" to="." method="_on_action_confirmed"]
+[connection signal="pressed" from="Toolbar/MasterButton" to="." method="checkout_master"]

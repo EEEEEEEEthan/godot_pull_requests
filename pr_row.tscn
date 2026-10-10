@@ -1,21 +1,31 @@
 [gd_scene format=3 uid="uid://e7755wscx4hk"]
 
-[ext_resource type="Script" uid="uid://c7h2gad4k8m3q" path="res://addons/godot_pull_requests/pr_row.gd" id="1_row"]
-[ext_resource type="Texture2D" uid="uid://b85utvdpkmi02" path="res://addons/godot_pull_requests/checkout_icon.svg" id="2_6hiof"]
-[ext_resource type="Texture2D" uid="uid://b1fw1u2kbhx6" path="res://addons/godot_pull_requests/spinner_icon.svg" id="2_nu64f"]
-[ext_resource type="Texture2D" uid="uid://cdj3dn3bf8cn3" path="res://addons/godot_pull_requests/merge_icon.svg" id="3_5lxqw"]
-[ext_resource type="Texture2D" uid="uid://bovvoryp18j3a" path="res://addons/godot_pull_requests/conflict_icon.svg" id="3_lorvs"]
-[ext_resource type="Texture2D" uid="uid://c830ylmwc77sw" path="res://addons/godot_pull_requests/ci_failed_icon.svg" id="4_vhmby"]
+[ext_resource type="Script" uid="uid://bm3qg0yf2duqw" path="res://addons/godot_pull_requests/pr_row.gd" id="1_row"]
+[ext_resource type="Texture2D" uid="uid://bve4bpxtbythw" path="res://addons/godot_pull_requests/icons.svg" id="2_icons"]
 
-[sub_resource type="DPITexture" id="DPITexture_7nu3r"]
-_source = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"16\" height=\"16\"><path fill=\"none\" stroke=\"#fff\" stroke-opacity=\".898\" stroke-width=\"2\" d=\"m3 3 10 10M3 13 13 3\"/></svg>
-"
-saturation = 2.0
-color_map = {
-Color(1, 0.37254903, 0.37254903, 1): Color(1, 0.47, 0.42, 1),
-Color(0.37254903, 1, 0.5921569, 1): Color(0.45, 0.95, 0.5, 1),
-Color(1, 0.8666667, 0.39607844, 1): Color(0.83, 0.78, 0.62, 1)
-}
+[sub_resource type="AtlasTexture" id="AtlasTexture_checkout"]
+atlas = ExtResource("2_icons")
+region = Rect2(0, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_spinner"]
+atlas = ExtResource("2_icons")
+region = Rect2(48, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_conflict"]
+atlas = ExtResource("2_icons")
+region = Rect2(80, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_ci"]
+atlas = ExtResource("2_icons")
+region = Rect2(96, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_merge"]
+atlas = ExtResource("2_icons")
+region = Rect2(16, 0, 16, 16)
+
+[sub_resource type="AtlasTexture" id="AtlasTexture_close"]
+atlas = ExtResource("2_icons")
+region = Rect2(112, 0, 16, 16)
 
 [node name="PRRow" type="VBoxContainer" unique_id=426079583]
 offset_right = 149.91515
@@ -31,7 +41,7 @@ layout_mode = 2
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
-icon = ExtResource("2_6hiof")
+icon = SubResource("AtlasTexture_checkout")
 
 [node name="Refreshing" type="TextureRect" parent="HBoxContainer" unique_id=1698193647]
 unique_name_in_owner = true
@@ -40,7 +50,7 @@ custom_minimum_size = Vector2(16, 16)
 layout_mode = 2
 tooltip_text = "正在读取详情"
 mouse_filter = 0
-texture = ExtResource("2_nu64f")
+texture = SubResource("AtlasTexture_spinner")
 stretch_mode = 5
 
 [node name="Conflict" type="TextureRect" parent="HBoxContainer" unique_id=1974163217]
@@ -50,7 +60,7 @@ custom_minimum_size = Vector2(16, 16)
 layout_mode = 2
 tooltip_text = "有合并冲突"
 mouse_filter = 0
-texture = ExtResource("3_lorvs")
+texture = SubResource("AtlasTexture_conflict")
 stretch_mode = 5
 
 [node name="CIFailed" type="TextureRect" parent="HBoxContainer" unique_id=2143247859]
@@ -60,7 +70,7 @@ custom_minimum_size = Vector2(16, 16)
 layout_mode = 2
 tooltip_text = "检查未通过"
 mouse_filter = 0
-texture = ExtResource("4_vhmby")
+texture = SubResource("AtlasTexture_ci")
 stretch_mode = 5
 
 [node name="TitleLink" type="LinkButton" parent="HBoxContainer" unique_id=537180694]
@@ -76,14 +86,14 @@ text_overrun_behavior = 3
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
-icon = ExtResource("3_5lxqw")
+icon = SubResource("AtlasTexture_merge")
 
 [node name="CloseButton" type="Button" parent="HBoxContainer" unique_id=304857361]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
 size_flags_horizontal = 8
-icon = SubResource("DPITexture_7nu3r")
+icon = SubResource("AtlasTexture_close")
 
 [connection signal="pressed" from="HBoxContainer/CheckoutButton" to="." method="request_checkout"]
 [connection signal="pressed" from="HBoxContainer/TitleLink" to="." method="open_link"]
