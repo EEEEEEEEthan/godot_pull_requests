@@ -596,6 +596,7 @@ func _make_pr_row(pr: Dictionary) -> void:
 	row.close_requested.connect(_on_close_pr_pressed)
 	row.checkout_requested.connect(_on_checkout_pr_pressed)
 	row.link_opened.connect(_on_pr_link_pressed)
+	row.github_action_finished.connect(_on_row_github_action_finished)
 	_list_container.add_child(row)
 	row.show_pull_request(pr, _cached_github_repo, _read_current_local_branch())
 
@@ -820,9 +821,11 @@ func _on_action_confirmed() -> void:
 			_set_status("未知的切换类型，已取消切换", true)
 			_set_busy(false)
 	elif action_type == _ACTION_MERGE:
-		await _execute_pr_merge(action)
+		_set_busy(false)
+		_start_row_github_action(action, true)
 	elif action_type == _ACTION_CLOSE:
-		await _execute_pr_close(action)
+		_set_busy(false)
+		_start_row_github_action(action, false)
 	else:
 		_set_status("未知的操作类型，已取消", true)
 		_set_busy(false)
@@ -907,50 +910,38 @@ func _execute_branch_checkout(checkout: Dictionary) -> void:
 	_finish_checkout_success("已切换到分支：%s / %s" % [source, branch])
 
 
-func _execute_pr_merge(action: Dictionary) -> void:
-	var number: int = int(action.get("number", 0))
-	var merge_flag := str(action.get("merge_flag", _MERGE_FLAG_MERGE))
-	if number <= 0:
-		_set_status("无效的 PR 编号，已取消合并", true)
-		_set_busy(false)
+func _start_row_github_action(action: Dictionary, merge: bool) -> void:
+	var number := int(action.get("number", 0))
+	var row := _find_row(number)
+	if row == null:
+		_set_status("找不到 PR #%d" % number, true)
 		return
-	if merge_flag != _MERGE_FLAG_MERGE and merge_flag != _MERGE_FLAG_SQUASH and merge_flag != _MERGE_FLAG_REBASE:
-		merge_flag = _MERGE_FLAG_MERGE
+	if merge:
+		var merge_flag := str(action.get("merge_flag", _MERGE_FLAG_MERGE))
+		if merge_flag != _MERGE_FLAG_MERGE and merge_flag != _MERGE_FLAG_SQUASH and merge_flag != _MERGE_FLAG_REBASE:
+			merge_flag = _MERGE_FLAG_MERGE
+		row.merge_pull_request(merge_flag)
+	else:
+		row.close_pull_request()
 
-	_set_status("正在合并 PR #" + str(number) + "…")
-	if not await _yield_ui():
+
+func _find_row(number: int) -> Node:
+	for child in _list_container.get_children():
+		var row := child as _PrRow
+		if row == null:
+			continue
+		if int(row.pull_request.get("number", 0)) == number:
+			return row
+	return null
+
+
+func _on_row_github_action_finished(ok: bool, message: String) -> void:
+	if not _still_alive():
 		return
-
-	if not await _run_gh_step(
-			PackedStringArray(["pr", "merge", str(number), merge_flag]),
-			"gh pr merge",
-	):
+	if not ok:
+		_set_status(message, true)
 		return
-
-	_set_status("已合并 PR #" + str(number))
-	_set_busy(false)
-	_refresh_prs()
-
-
-func _execute_pr_close(action: Dictionary) -> void:
-	var number: int = int(action.get("number", 0))
-	if number <= 0:
-		_set_status("无效的 PR 编号，已取消关闭", true)
-		_set_busy(false)
-		return
-
-	_set_status("正在关闭 PR #" + str(number) + "…")
-	if not await _yield_ui():
-		return
-
-	if not await _run_gh_step(
-			PackedStringArray(["pr", "close", str(number)]),
-			"gh pr close",
-	):
-		return
-
-	_set_status("已关闭 PR #" + str(number))
-	_set_busy(false)
+	_set_status(message)
 	_refresh_prs()
 
 

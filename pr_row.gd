@@ -7,6 +7,7 @@ signal merge_requested(pr: Dictionary)
 signal close_requested(pr: Dictionary)
 signal checkout_requested(pr: Dictionary)
 signal link_opened(number: int)
+signal github_action_finished(ok: bool, message: String)
 
 const _DETAIL_FIELDS := "isDraft,mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,author,body,statusCheckRollup"
 
@@ -23,10 +24,14 @@ var current_branch: String = ""
 var _busy := false
 var _merge_blocked := false
 var _details_pending := false
+var _action_pending := false
 var _detail_token := 0
 var _detail_mutex := Mutex.new()
 var _detail_ready := false
 var _detail_payload: Dictionary = {}
+var _action_mutex := Mutex.new()
+var _action_ready := false
+var _action_payload: Dictionary = {}
 
 
 func _ready() -> void:
@@ -46,8 +51,9 @@ func _process(delta: float) -> void:
 		payload = _detail_payload
 	_detail_mutex.unlock()
 	if not ready:
-		if not %Refreshing.visible:
+		if not %Refreshing.visible and not _action_pending:
 			set_process(false)
+		_take_action_result()
 		return
 	if int(payload.get("token", -1)) != _detail_token:
 		return
@@ -65,8 +71,9 @@ func _process(delta: float) -> void:
 	_detail_mutex.lock()
 	var still_pending := _detail_ready
 	_detail_mutex.unlock()
-	if not still_pending:
+	if not still_pending and not _action_pending:
 		set_process(false)
+	_take_action_result()
 
 
 func set_busy(busy: bool) -> void:
@@ -83,15 +90,33 @@ func show_pull_request(summary: Dictionary, repository: String, checked_out_bran
 
 
 func request_merge() -> void:
-	if pull_request.is_empty() or _merge_blocked or _details_pending:
+	if pull_request.is_empty() or _merge_blocked or _details_pending or _action_pending:
 		return
 	merge_requested.emit(pull_request.duplicate(true))
 
 
 func request_close() -> void:
-	if pull_request.is_empty():
+	if pull_request.is_empty() or _action_pending:
 		return
 	close_requested.emit(pull_request.duplicate(true))
+
+
+func merge_pull_request(merge_flag: String) -> void:
+	var number := int(pull_request.get("number", 0))
+	_begin_github_action(
+		PackedStringArray(["pr", "merge", str(number), merge_flag]),
+		"已合并 PR #%d" % number,
+		"gh pr merge 失败",
+	)
+
+
+func close_pull_request() -> void:
+	var number := int(pull_request.get("number", 0))
+	_begin_github_action(
+		PackedStringArray(["pr", "close", str(number)]),
+		"已关闭 PR #%d" % number,
+		"gh pr close 失败",
+	)
 
 
 func request_checkout() -> void:
@@ -136,7 +161,7 @@ func _apply_summary() -> void:
 
 
 func _apply_indicators() -> void:
-	%Refreshing.visible = _details_pending
+	%Refreshing.visible = _details_pending or _action_pending
 	%Conflict.visible = not _details_pending and _has_conflict()
 	%CIFailed.visible = not _details_pending and _has_ci_failure()
 	if _details_pending:
@@ -163,8 +188,8 @@ func _has_ci_failure() -> bool:
 
 
 func _apply_buttons() -> void:
-	%MergeButton.disabled = _busy or _merge_blocked or _details_pending
-	%CloseButton.disabled = _busy
+	%MergeButton.disabled = _busy or _merge_blocked or _details_pending or _action_pending
+	%CloseButton.disabled = _busy or _action_pending
 	var branch := str(pull_request.get("headRefName", ""))
 	%CheckoutButton.disabled = _busy or branch.is_empty()
 	%TitleLink.disabled = _busy or str(pull_request.get("url", "")).is_empty()
@@ -277,3 +302,46 @@ func _begin_detail_fetch() -> void:
 			_detail_ready = true
 		_detail_mutex.unlock()
 	)
+
+
+func _begin_github_action(arguments: PackedStringArray, success_message: String, failure_message: String) -> void:
+	var number := int(pull_request.get("number", 0))
+	var repository := github_repository
+	if number <= 0 or repository.is_empty() or _action_pending:
+		github_action_finished.emit(false, "无法执行 GitHub 操作")
+		return
+	_action_pending = true
+	_apply_summary()
+	set_process(true)
+	WorkerThreadPool.add_task(func() -> void:
+		var output: Array = []
+		var command := PackedStringArray(["-R", repository])
+		command.append_array(arguments)
+		var exit_code := OS.execute("gh", command, output, true)
+		if not is_instance_valid(self):
+			return
+		var joined := "\n".join(output).strip_edges()
+		_action_mutex.lock()
+		_action_payload = {
+			"ok": exit_code == 0,
+			"message": success_message if exit_code == 0 else (failure_message + (": " + joined if not joined.is_empty() else "")),
+		}
+		_action_ready = true
+		_action_mutex.unlock()
+	)
+
+
+func _take_action_result() -> void:
+	var ready := false
+	var payload: Dictionary = {}
+	_action_mutex.lock()
+	if _action_ready:
+		ready = true
+		_action_ready = false
+		payload = _action_payload
+	_action_mutex.unlock()
+	if not ready:
+		return
+	_action_pending = false
+	_apply_summary()
+	github_action_finished.emit(bool(payload.get("ok", false)), str(payload.get("message", "")))
