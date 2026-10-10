@@ -42,6 +42,7 @@ var _cached_github_repo: String = ""
 var _cached_merge_flag: String = ""
 ## 重建 OptionButton 项时置位，避免 item_selected 误触发切换（select 本身不 emit，热重载/版本兜底）。
 var _suppress_branch_selected: bool = false
+var _external_reload_attempts := 0
 
 
 func _ready() -> void:
@@ -55,7 +56,6 @@ func _ready() -> void:
 	if not %ConfirmDialog.canceled.is_connected(_on_action_canceled):
 		%ConfirmDialog.canceled.connect(_on_action_canceled)
 	_rebuild_branch_options()
-	%MasterButton.disabled = _read_current_local_branch() == "master"
 	# 等进入场景树后再拉列表，避免 Dock 尚未挂载时发起外部进程。
 	call_deferred("_refresh_prs")
 
@@ -130,7 +130,7 @@ func _set_busy(busy: bool) -> void:
 			_rebuild_branch_options()
 			if is_instance_valid(_branch_option):
 				_branch_option.disabled = false
-	%MasterButton.disabled = busy or _read_current_local_branch() == "master"
+	%MasterButton.disabled = busy
 	if not is_instance_valid(_list_container):
 		return
 	for child in _list_container.get_children():
@@ -681,11 +681,9 @@ func _on_close_pr_pressed(pr: Dictionary) -> void:
 func checkout_master() -> void:
 	if _busy or _cancelled or _refreshing:
 		return
-	if _read_current_local_branch() == "master":
-		return
 	_request_checkout({
 		"kind": _CHECKOUT_KIND_BRANCH,
-		"source": _SOURCE_LOCAL,
+		"source": "origin",
 		"branch": "master",
 	})
 
@@ -979,3 +977,39 @@ func _finish_checkout_success(message: String) -> void:
 	_set_status(message)
 	_set_busy(false)
 	_refresh_prs()
+	_external_reload_attempts = 40
+	_poll_external_reload()
+
+
+func _poll_external_reload() -> void:
+	if not _still_alive() or _external_reload_attempts <= 0:
+		return
+	_external_reload_attempts -= 1
+	if _confirm_external_reload(EditorInterface.get_base_control()):
+		_external_reload_attempts = 0
+		return
+	await get_tree().create_timer(0.25).timeout
+	_poll_external_reload()
+
+
+func _confirm_external_reload(node: Node) -> bool:
+	var confirmed_dialog := false
+	if node is ConfirmationDialog and node != %ConfirmDialog:
+		var dialog := node as ConfirmationDialog
+		var ok_button := dialog.get_ok_button()
+		var ok_text := ok_button.text if ok_button != null else ""
+		var title := dialog.title
+		var is_disk_reload := (
+			ok_text.contains("重新加载")
+			or ok_text.contains("Reload from disk")
+			or title.contains("外部被修改")
+			or title.contains("modified outside")
+		)
+		if is_disk_reload and dialog.visible:
+			dialog.confirmed.emit()
+			dialog.hide()
+			confirmed_dialog = true
+	for child in node.get_children():
+		if _confirm_external_reload(child):
+			confirmed_dialog = true
+	return confirmed_dialog
