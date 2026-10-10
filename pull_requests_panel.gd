@@ -597,7 +597,7 @@ func _make_pr_row(pr: Dictionary) -> void:
 	row.checkout_requested.connect(_on_checkout_pr_pressed)
 	row.link_opened.connect(_on_pr_link_pressed)
 	_list_container.add_child(row)
-	row.show_pull_request(pr, _cached_github_repo)
+	row.show_pull_request(pr, _cached_github_repo, _read_current_local_branch())
 
 
 func _on_pr_link_pressed(number: int) -> void:

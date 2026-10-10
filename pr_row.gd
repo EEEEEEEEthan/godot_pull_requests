@@ -18,6 +18,7 @@ var pull_request: Dictionary = {}:
 		_begin_detail_fetch()
 
 var github_repository: String = ""
+var current_branch: String = ""
 
 var _busy := false
 var _merge_blocked := false
@@ -75,8 +76,9 @@ func set_busy(busy: bool) -> void:
 	_apply_buttons()
 
 
-func show_pull_request(summary: Dictionary, repository: String) -> void:
+func show_pull_request(summary: Dictionary, repository: String, checked_out_branch: String = "") -> void:
 	github_repository = repository
+	current_branch = checked_out_branch
 	pull_request = summary
 
 
@@ -107,9 +109,25 @@ func open_link() -> void:
 func _apply_summary() -> void:
 	var number := int(pull_request.get("number", 0))
 	var title := str(pull_request.get("title", ""))
+	var branch := str(pull_request.get("headRefName", ""))
 	var url := str(pull_request.get("url", ""))
-	%TitleLink.text = "#%d  %s" % [number, title]
+	var checked_out := not branch.is_empty() and branch == current_branch
+	if branch.is_empty():
+		%TitleLink.text = "#%d  %s" % [number, title]
+	elif checked_out:
+		%TitleLink.text = "▶ " + branch
+	else:
+		%TitleLink.text = branch
 	%TitleLink.uri = url
+	if checked_out:
+		var current_color := Color(0.45, 0.95, 0.5)
+		%TitleLink.add_theme_color_override("font_color", current_color)
+		%TitleLink.add_theme_color_override("font_hover_color", current_color)
+		%TitleLink.add_theme_color_override("font_pressed_color", current_color)
+	else:
+		%TitleLink.remove_theme_color_override("font_color")
+		%TitleLink.remove_theme_color_override("font_hover_color")
+		%TitleLink.remove_theme_color_override("font_pressed_color")
 	%TitleLink.disabled = url.is_empty() or _busy
 	_merge_blocked = bool(pull_request.get("isDraft", false)) or _has_conflict()
 	_apply_indicators()
