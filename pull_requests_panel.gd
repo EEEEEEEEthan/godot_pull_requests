@@ -19,7 +19,6 @@ const _PrRow := preload("pr_row.gd")
 const _PR_ROW_SCENE := preload("pr_row.tscn")
 
 @onready var _branch_option: OptionButton = %BranchOptionButton
-@onready var _status_label: Label = %StatusLabel
 @onready var _refresh_button: Button = %RefreshButton
 @onready var _list_container: VBoxContainer = %ListContainer
 @onready var _empty_label: Label = %EmptyLabel
@@ -110,14 +109,15 @@ func _yield_ui() -> bool:
 	return _still_alive()
 
 
+func _sync_refresh_button() -> void:
+	var disabled := _busy or _refreshing
+	%RefreshButton.disabled = disabled
+	%RefreshIcon.modulate = Color(1, 1, 1, 0.4 if disabled else 1.0)
+
+
 func _set_status(message: String, is_error: bool = false) -> void:
-	if not is_instance_valid(_status_label):
-		return
-	_status_label.text = message
-	if is_error:
-		_status_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
-	else:
-		_status_label.remove_theme_color_override("font_color")
+	if is_error and not message.is_empty():
+		push_error(message)
 
 
 func _set_busy(busy: bool) -> void:
@@ -131,6 +131,7 @@ func _set_busy(busy: bool) -> void:
 			if is_instance_valid(_branch_option):
 				_branch_option.disabled = false
 	%MasterButton.disabled = busy
+	_sync_refresh_button()
 	if not is_instance_valid(_list_container):
 		return
 	for child in _list_container.get_children():
@@ -512,8 +513,8 @@ func _refresh_prs() -> void:
 	_refreshing = true
 	_refresh_token += 1
 	var token := _refresh_token
-	%RefreshButton.disabled = true
 	%RefreshIcon.rotation = 0.0
+	_sync_refresh_button()
 	set_process(true)
 	_set_status("正在加载 Pull Request…")
 	var repository := _resolve_github_repo()
@@ -552,8 +553,8 @@ func _refresh_prs() -> void:
 
 func _finish_refresh(result: Dictionary) -> void:
 	_refreshing = false
-	%RefreshButton.disabled = false
 	%RefreshIcon.rotation = 0.0
+	_sync_refresh_button()
 	if not bool(result.get("ok", false)):
 		_empty_label.text = "加载失败"
 		_empty_label.visible = true
