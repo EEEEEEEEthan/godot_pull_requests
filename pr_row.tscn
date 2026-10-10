@@ -17,30 +17,23 @@ Color(0.37254903, 1, 0.5921569, 1): Color(0.45, 0.95, 0.5, 1),
 Color(1, 0.8666667, 0.39607844, 1): Color(0.83, 0.78, 0.62, 1)
 }
 
-[node name="PrRow" type="PanelContainer" unique_id=204857361]
-offset_right = 148.0
-offset_bottom = 40.0
-size_flags_horizontal = 3
-script = ExtResource("1_row")
-
-[node name="Margin" type="MarginContainer" parent="." unique_id=315968472]
-unique_name_in_owner = true
-layout_mode = 2
-theme_override_constants/margin_left = 6
-theme_override_constants/margin_top = 6
-theme_override_constants/margin_right = 6
-theme_override_constants/margin_bottom = 6
-
-[node name="Column" type="VBoxContainer" parent="Margin" unique_id=426079583]
-unique_name_in_owner = true
-layout_mode = 2
+[node name="PRRow" type="VBoxContainer" unique_id=426079583]
+offset_right = 149.91515
+offset_bottom = 28.0
 size_flags_horizontal = 3
 theme_override_constants/separation = 4
+script = ExtResource("1_row")
 
-[node name="HBoxContainer" type="HBoxContainer" parent="Margin/Column" unique_id=1302982915]
+[node name="HBoxContainer" type="HBoxContainer" parent="." unique_id=1302982915]
 layout_mode = 2
 
-[node name="Refreshing" type="TextureRect" parent="Margin/Column/HBoxContainer" unique_id=1698193647]
+[node name="CheckoutButton" type="Button" parent="HBoxContainer" unique_id=415968472]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(28, 28)
+layout_mode = 2
+icon = ExtResource("2_6hiof")
+
+[node name="Refreshing" type="TextureRect" parent="HBoxContainer" unique_id=1698193647]
 unique_name_in_owner = true
 visible = false
 custom_minimum_size = Vector2(16, 16)
@@ -50,7 +43,7 @@ mouse_filter = 0
 texture = ExtResource("2_nu64f")
 stretch_mode = 5
 
-[node name="Conflict" type="TextureRect" parent="Margin/Column/HBoxContainer" unique_id=1974163217]
+[node name="Conflict" type="TextureRect" parent="HBoxContainer" unique_id=1974163217]
 unique_name_in_owner = true
 visible = false
 custom_minimum_size = Vector2(16, 16)
@@ -60,7 +53,7 @@ mouse_filter = 0
 texture = ExtResource("3_lorvs")
 stretch_mode = 5
 
-[node name="CIFailed" type="TextureRect" parent="Margin/Column/HBoxContainer" unique_id=2143247859]
+[node name="CIFailed" type="TextureRect" parent="HBoxContainer" unique_id=2143247859]
 unique_name_in_owner = true
 visible = false
 custom_minimum_size = Vector2(16, 16)
@@ -70,42 +63,29 @@ mouse_filter = 0
 texture = ExtResource("4_vhmby")
 stretch_mode = 5
 
-[node name="TitleLink" type="LinkButton" parent="Margin/Column/HBoxContainer" unique_id=537180694]
+[node name="TitleLink" type="LinkButton" parent="HBoxContainer" unique_id=537180694]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 4
-tooltip_text = "在浏览器中打开此 PR"
 text = "pr_name"
 underline = 1
 text_overrun_behavior = 3
 
-[node name="Buttons" type="HBoxContainer" parent="Margin/Column/HBoxContainer" unique_id=182635149]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 8
-theme_override_constants/separation = 6
-
-[node name="CheckoutButton" type="Button" parent="Margin/Column/HBoxContainer/Buttons" unique_id=415968472]
-unique_name_in_owner = true
-custom_minimum_size = Vector2(28, 28)
-layout_mode = 2
-icon = ExtResource("2_6hiof")
-
-[node name="MergeButton" type="Button" parent="Margin/Column/HBoxContainer/Buttons" unique_id=293746250]
+[node name="MergeButton" type="Button" parent="HBoxContainer" unique_id=293746250]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
 icon = ExtResource("3_5lxqw")
 
-[node name="CloseButton" type="Button" parent="Margin/Column/HBoxContainer/Buttons" unique_id=304857361]
+[node name="CloseButton" type="Button" parent="HBoxContainer" unique_id=304857361]
 unique_name_in_owner = true
 custom_minimum_size = Vector2(28, 28)
 layout_mode = 2
-size_flags_horizontal = 10
+size_flags_horizontal = 8
 icon = SubResource("DPITexture_7nu3r")
 
-[connection signal="pressed" from="Margin/Column/HBoxContainer/TitleLink" to="." method="open_link"]
-[connection signal="pressed" from="Margin/Column/HBoxContainer/Buttons/CheckoutButton" to="." method="request_checkout"]
-[connection signal="pressed" from="Margin/Column/HBoxContainer/Buttons/MergeButton" to="." method="request_merge"]
-[connection signal="pressed" from="Margin/Column/HBoxContainer/Buttons/CloseButton" to="." method="request_close"]
+[connection signal="pressed" from="HBoxContainer/CheckoutButton" to="." method="request_checkout"]
+[connection signal="pressed" from="HBoxContainer/TitleLink" to="." method="open_link"]
+[connection signal="pressed" from="HBoxContainer/MergeButton" to="." method="request_merge"]
+[connection signal="pressed" from="HBoxContainer/CloseButton" to="." method="request_close"]

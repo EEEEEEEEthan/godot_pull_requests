@@ -1,5 +1,5 @@
 @tool
-extends PanelContainer
+extends VBoxContainer
 
 ## 单条 PR：先显示列表摘要，再自行异步补详情；合并/关闭/切换为图标，说明在 tooltip。
 
@@ -9,9 +9,6 @@ signal checkout_requested(pr: Dictionary)
 signal link_opened(number: int)
 
 const _DETAIL_FIELDS := "isDraft,mergeable,mergeStateStatus,reviewDecision,additions,deletions,changedFiles,author,body,statusCheckRollup"
-const _CONFLICT_ICON := preload("res://addons/godot_pull_requests/conflict_icon.svg")
-const _CI_FAILED_ICON := preload("res://addons/godot_pull_requests/ci_failed_icon.svg")
-const _REFRESH_ICON := preload("res://addons/godot_pull_requests/spinner_icon.svg")
 
 var pull_request: Dictionary = {}:
 	set(value):
@@ -33,17 +30,6 @@ var _detail_payload: Dictionary = {}
 
 func _ready() -> void:
 	set_process(false)
-	%Refreshing.texture = _REFRESH_ICON
-	%Refreshing.tooltip_text = "正在读取详情"
-	%Conflict.texture = _CONFLICT_ICON
-	%Conflict.tooltip_text = "有合并冲突"
-	%CIFailed.texture = _CI_FAILED_ICON
-	%CIFailed.tooltip_text = "检查未通过"
-	for indicator in [%Refreshing, %Conflict, %CIFailed]:
-		indicator.custom_minimum_size = Vector2(16, 16)
-		indicator.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-		indicator.mouse_filter = Control.MOUSE_FILTER_STOP
-		indicator.visible = false
 
 
 func _process(delta: float) -> void:
@@ -167,10 +153,10 @@ func _apply_buttons() -> void:
 
 
 func _apply_tooltips() -> void:
-	var detail := _detail_text()
-	%MergeButton.tooltip_text = "合并此 Pull Request\n\n" + detail
-	%CloseButton.tooltip_text = "关闭此 Pull Request（不删分支）\n\n" + detail
-	%CheckoutButton.tooltip_text = "切换到该 PR 分支，并丢弃本地未提交改动\n\n" + detail
+	%TitleLink.tooltip_text = _detail_text()
+	%MergeButton.tooltip_text = "合并"
+	%CloseButton.tooltip_text = "关闭"
+	%CheckoutButton.tooltip_text = "切换到此分支"
 
 
 func _detail_text() -> String:
